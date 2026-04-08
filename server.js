@@ -9,7 +9,7 @@ const axios = require('axios');
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-// 初始化 Express
+// ==================== 初始化 Express ====================
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -18,7 +18,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-//Alist 客户端
+// ==================== Alist 客户端 ====================
 const ALIST_CONFIG = {
     url: process.env.ALIST_URL || 'http://10.88.202.73:5244',
     basePath: process.env.ALIST_BASE_PATH || '/学生目录/log',
@@ -54,7 +54,6 @@ class AlistClient {
             return response.data;
         } catch (error) {
             if (retry && error.response && error.response.status === 401) {
-                // Token 失效，重新登录并重试一次
                 await this._login();
                 headers.Authorization = this.token;
                 const retryResponse = await axios({ method, url, data, headers, ...options });
@@ -71,7 +70,7 @@ class AlistClient {
         });
         if (response.data.code === 200) {
             this.token = response.data.data.token;
-            this.tokenExpire = Date.now() + 23 * 60 * 60 * 1000; // 24h 有效期提前1h刷新
+            this.tokenExpire = Date.now() + 23 * 60 * 60 * 1000;
         } else {
             throw new Error('Alist 登录失败: ' + response.data.message);
         }
@@ -87,7 +86,6 @@ class AlistClient {
         return relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
     }
 
-    // 确保目录存在
     async ensureDir(dirPath) {
         const fullPath = this._getFullPath(dirPath);
         try {
@@ -101,41 +99,34 @@ class AlistClient {
         }
     }
 
-    // 列出目录文件
     async listFiles(dirPath) {
-    const fullPath = this._getFullPath(dirPath);
-    try {
-        const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
-        
-        // 临时日志
-        console.log(`[Alist] listFiles(${dirPath}) 返回:`, JSON.stringify(result, null, 2));
-
-        if (result.code === 200) {
-            // 尝试从多个可能的字段中获取文件列表
-            let items = [];
-            if (result.data?.content && Array.isArray(result.data.content)) {
-                items = result.data.content;
-            } else if (result.data?.files && Array.isArray(result.data.files)) {
-                items = result.data.files;
-            } else if (Array.isArray(result.data)) {
-                items = result.data;
+        const fullPath = this._getFullPath(dirPath);
+        try {
+            const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
+            if (result.code === 200) {
+                let items = [];
+                if (result.data?.content && Array.isArray(result.data.content)) {
+                    items = result.data.content;
+                } else if (result.data?.files && Array.isArray(result.data.files)) {
+                    items = result.data.files;
+                } else if (Array.isArray(result.data)) {
+                    items = result.data;
+                }
+                return items.map(item => ({
+                    filename: item.name || item.filename || 'unknown',
+                    size: item.size || 0,
+                    uploadTime: new Date(item.modified || item.updated || item.mtime || Date.now())
+                }));
             }
-
-            return items.map(item => ({
-                filename: item.name || item.filename || 'unknown',
-                size: item.size || 0,
-                uploadTime: new Date(item.modified || item.updated || item.mtime || Date.now())
-            }));
+            return [];
+        } catch (err) {
+            if (err.response && err.response.status === 404) {
+                return [];
+            }
+            throw err;
         }
-        return [];
-    } catch (err) {
-        if (err.response && err.response.status === 404) {
-            return [];  // 目录不存在，视为空
-        }
-        throw err;
     }
-}
-    // 读取文本文件
+
     async readFile(filePath) {
         const fullPath = this._getFullPath(filePath);
         return await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`, null, {
@@ -143,7 +134,6 @@ class AlistClient {
         });
     }
 
-    // 下载文件（流式）
     async downloadFile(filePath, res) {
         const fullPath = this._getFullPath(filePath);
         await this._ensureToken();
@@ -157,7 +147,6 @@ class AlistClient {
         response.data.pipe(res);
     }
 
-    // 上传文本文件
     async uploadFile(dirPath, filename, content) {
         const fullDir = this._getFullPath(dirPath);
         const fullPath = `${fullDir}/${filename}`;
@@ -174,7 +163,7 @@ class AlistClient {
 
 const alistClient = new AlistClient(ALIST_CONFIG);
 
-//  MySQL 连接池
+// ==================== MySQL 连接池 ====================
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT) || 3306,
@@ -189,7 +178,6 @@ const dbConfig = {
 
 const pool = mysql.createPool(dbConfig);
 
-// 初始化数据库表
 async function initDatabase() {
     let connection;
     try {
@@ -212,7 +200,6 @@ async function initDatabase() {
     }
 }
 
-// 从数据库加载已知客户端
 async function loadKnownClientsFromDB() {
     let connection;
     try {
@@ -227,7 +214,6 @@ async function loadKnownClientsFromDB() {
     }
 }
 
-// 保存/更新已知客户端
 async function saveKnownClientToDB(clientId, ip, port) {
     let connection;
     try {
@@ -249,7 +235,6 @@ async function saveKnownClientToDB(clientId, ip, port) {
     }
 }
 
-// 更新最后在线时间
 async function updateLastSeen(clientId) {
     let connection;
     try {
@@ -265,14 +250,14 @@ async function updateLastSeen(clientId) {
     }
 }
 
-// ClientManager (被动监听模式)
+// ==================== ClientManager（被动监听 + 主动扫描） ====================
 const TCP_LISTEN_PORT = parseInt(process.env.TCP_PORT) || 9999;
 
 class ClientManager {
     constructor() {
-        this.clients = new Map();           // 在线客户端 Map<clientId, clientObject>
-        this.knownClients = new Set();      // 已知客户端 ID 集合
-        this.webClients = new Set();        // WebSocket 连接
+        this.clients = new Map();
+        this.knownClients = new Set();
+        this.webClients = new Set();
         this.heartbeatInterval = 30000;
         this.tcpServer = null;
 
@@ -307,12 +292,9 @@ class ClientManager {
                 uploadEnabled: false,
                 lastSeen: new Date(),
                 logDir: alistClient.basePath,
-                commandQueue: [],
-                pendingResponse: null,
                 shouldReconnect: false
             };
 
-            // 如果已存在同 ID 的旧连接，先清理
             const existing = this.clients.get(clientId);
             if (existing) {
                 existing.socket.destroy();
@@ -450,11 +432,9 @@ class ClientManager {
 
     getAllClients() {
         const allClients = [];
-        // 在线客户端
         for (const client of this.clients.values()) {
             allClients.push(this.getClientInfo(client));
         }
-        // 离线但已知的客户端
         for (const clientId of this.knownClients) {
             if (!this.clients.has(clientId)) {
                 const [ip, port] = clientId.split(':');
@@ -492,11 +472,158 @@ class ClientManager {
             }
         });
     }
+
+    // ---------- 主动扫描功能 ----------
+    async scanNetwork(startIp, endIp, ports = [9999]) {
+        const startParts = startIp.split('.').map(Number);
+        const endParts = endIp.split('.').map(Number);
+        if (startParts.length !== 4 || endParts.length !== 4) {
+            throw new Error('IP 地址格式错误');
+        }
+
+        // 将 IP 转为 32 位整数便于遍历
+        const ipToInt = (ip) => {
+            const parts = ip.split('.').map(Number);
+            return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+        };
+        const intToIp = (int) => {
+            return [
+                (int >> 24) & 0xFF,
+                (int >> 16) & 0xFF,
+                (int >> 8) & 0xFF,
+                int & 0xFF
+            ].join('.');
+        };
+
+        const startInt = ipToInt(startIp);
+        const endInt = ipToInt(endIp);
+        const total = endInt - startInt + 1;
+
+        console.log(`开始扫描网络: ${startIp} - ${endIp}, 端口: ${ports.join(',')}`);
+
+        const foundClients = [];
+        const concurrency = 100; // 并发连接数
+        let current = 0;
+
+        // 分批处理
+        const ipList = [];
+        for (let i = 0; i < total; i++) {
+            ipList.push(intToIp(startInt + i));
+        }
+
+        const scanIp = async (ip) => {
+            for (const port of ports) {
+                const client = await this.tryConnect(ip, port);
+                if (client) {
+                    foundClients.push(client);
+                    break; // 找到一个端口即可
+                }
+            }
+        };
+
+        // 并发控制
+        const tasks = [];
+        for (const ip of ipList) {
+            tasks.push(scanIp(ip));
+            if (tasks.length >= concurrency) {
+                await Promise.allSettled(tasks.splice(0, concurrency));
+            }
+        }
+        await Promise.allSettled(tasks);
+
+        console.log(`扫描完成，发现 ${foundClients.length} 个客户端`);
+        return foundClients;
+    }
+
+    tryConnect(ip, port) {
+        return new Promise((resolve) => {
+            const cleanIp = ip.split('/')[0];
+            const socket = new net.Socket();
+            const timeout = 3000; // 3秒超时
+            let resolved = false;
+
+            const cleanup = () => {
+                if (!resolved) {
+                    resolved = true;
+                    socket.destroy();
+                    resolve(null);
+                }
+            };
+
+            socket.setTimeout(timeout);
+            socket.connect(port, cleanIp, () => {
+                // 连接成功，尝试发送一个简单的 ping 验证是否为我们的客户端
+                socket.write(JSON.stringify({ action: 'ping' }) + '\n', (err) => {
+                    if (err) {
+                        cleanup();
+                        return;
+                    }
+                    // 等待一个简短响应
+                    const responseTimeout = setTimeout(() => {
+                        cleanup();
+                    }, 2000);
+
+                    socket.once('data', (data) => {
+                        clearTimeout(responseTimeout);
+                        try {
+                            const msg = JSON.parse(data.toString().split('\n')[0]);
+                            if (msg.status === 'ok' || msg.action === 'pong') {
+                                const clientId = `${cleanIp}:${port}`;
+                                // 检查是否已存在连接
+                                let client = this.clients.get(clientId);
+                                if (!client) {
+                                    client = {
+                                        id: clientId,
+                                        ip: cleanIp,
+                                        port,
+                                        socket,
+                                        status: 'online',
+                                        recording: true,
+                                        uploadEnabled: false,
+                                        lastSeen: new Date(),
+                                        logDir: alistClient.basePath,
+                                        shouldReconnect: false
+                                    };
+                                    this.clients.set(clientId, client);
+                                    this.knownClients.add(clientId);
+                                    saveKnownClientToDB(clientId, cleanIp, port).catch(e => console.error(e));
+                                    this.setupSocketListeners(client);
+                                    this.broadcastToWeb({ type: 'client_connected', client: this.getClientInfo(client) });
+                                } else {
+                                    // 替换旧 socket
+                                    client.socket.destroy();
+                                    client.socket = socket;
+                                    client.status = 'online';
+                                    this.setupSocketListeners(client);
+                                }
+                                resolved = true;
+                                resolve(this.getClientInfo(client));
+                            } else {
+                                cleanup();
+                            }
+                        } catch (e) {
+                            cleanup();
+                        }
+                    });
+                });
+            });
+
+            socket.on('error', () => cleanup());
+            socket.on('timeout', () => cleanup());
+            socket.on('close', () => {
+                if (!resolved) cleanup();
+            });
+        });
+    }
+
+    manualConnect(ip, port) {
+        return this.tryConnect(ip, port);
+    }
 }
 
 const clientManager = new ClientManager();
 
-//  WebSocket 处理
+// ==================== WebSocket 处理 ====================
 wss.on('connection', (ws) => {
     console.log('Web 客户端已连接');
     clientManager.addWebClient(ws);
@@ -513,6 +640,28 @@ wss.on('connection', (ws) => {
                 case 'broadcast_command':
                     const results = await clientManager.broadcastCommand(data.command);
                     ws.send(JSON.stringify({ type: 'broadcast_result', results }));
+                    break;
+
+                case 'scan_network':
+                    try {
+                        const found = await clientManager.scanNetwork(
+                            data.startIp,
+                            data.endIp,
+                            data.ports || [9999]
+                        );
+                        ws.send(JSON.stringify({ type: 'scan_complete', found }));
+                    } catch (e) {
+                        ws.send(JSON.stringify({ type: 'scan_error', message: e.message }));
+                    }
+                    break;
+
+                case 'manual_connect':
+                    try {
+                        const client = await clientManager.manualConnect(data.ip, data.port);
+                        ws.send(JSON.stringify({ type: 'connect_result', client }));
+                    } catch (e) {
+                        ws.send(JSON.stringify({ type: 'connect_error', message: e.message }));
+                    }
                     break;
 
                 case 'disconnect_client':
@@ -538,7 +687,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-//HTTP API
+// ==================== HTTP API ====================
 app.get('/api/clients', (req, res) => {
     res.json(clientManager.getAllClients());
 });
@@ -549,8 +698,10 @@ app.get('/api/clients/:clientId/logs', async (req, res) => {
         return res.status(404).json({ error: '客户端不存在或离线' });
     }
     try {
-        const files = await alistClient.listFiles(client.logDir);
-        res.json(files);
+        const allFiles = await alistClient.listFiles(client.logDir);
+        // 过滤出该 IP 的日志文件
+        const clientFiles = allFiles.filter(file => file.filename.startsWith(client.ip + '_'));
+        res.json(clientFiles);
     } catch (e) {
         console.error('获取日志列表失败:', e);
         res.status(500).json({ error: '读取失败', details: e.message });
@@ -605,7 +756,7 @@ app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: '10mb' }), 
     }
 });
 
-//启动服务
+// ==================== 启动服务 ====================
 const PORT = parseInt(process.env.PORT) || 3232;
 server.listen(PORT, () => {
     console.log(`HTTP 服务运行在端口 ${PORT}`);
