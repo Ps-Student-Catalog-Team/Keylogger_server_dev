@@ -129,36 +129,32 @@ class AlistClient {
         }
     }
 
-async readFile(filePath) {
-    const fullPath = this._getFullPath(filePath);
-    const result = await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`);
-    
-    if (result.code === 200 && result.data) {
-        // 获取文件原始二进制数据（Buffer）
-        let buffer;
-        if (result.data.raw_url) {
-            const response = await axios.get(result.data.raw_url, {
-                responseType: 'arraybuffer',  // 以二进制形式获取
-                headers: { 'Authorization': this.token }
-            });
-            buffer = Buffer.from(response.data);
-        } else if (result.data.content) {
-            buffer = Buffer.from(result.data.content, 'base64');
-        } else {
-            throw new Error('无法获取文件内容');
+    async readFile(filePath) {
+        const fullPath = this._getFullPath(filePath);
+        const result = await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`);
+
+        if (result.code === 200 && result.data) {
+            let buffer;
+            if (result.data.raw_url) {
+                const response = await axios.get(result.data.raw_url, {
+                    responseType: 'arraybuffer',
+                    headers: { 'Authorization': this.token }
+                });
+                buffer = Buffer.from(response.data);
+            } else if (result.data.content) {
+                buffer = Buffer.from(result.data.content, 'base64');
+            } else {
+                throw new Error('无法获取文件内容');
+            }
+
+            const detected = jschardet.detect(buffer);
+            const encoding = detected.encoding || 'utf-8';
+            console.log(`[readFile] 检测到编码: ${encoding}, 置信度: ${detected.confidence}`);
+
+            return iconv.decode(buffer, encoding);
         }
-
-        // 检测编码
-        const detected = jschardet.detect(buffer);
-        const encoding = detected.encoding || 'utf-8';
-        console.log(`[readFile] 检测到编码: ${encoding}, 置信度: ${detected.confidence}`);
-
-        // 转换为 UTF-8 字符串
-        return iconv.decode(buffer, encoding);
+        throw new Error('文件内容获取失败或文件不存在');
     }
-    throw new Error('文件内容获取失败或文件不存在');
-}
-
 
     async downloadFile(filePath, res) {
         const fullPath = this._getFullPath(filePath);
@@ -285,6 +281,21 @@ async function updateLastSeen(clientId) {
     }
 }
 
+// 新增：从数据库删除指定客户端
+async function deleteKnownClientFromDB(clientId) {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.execute('DELETE FROM known_clients WHERE id = ?', [clientId]);
+        console.log(`数据库记录已删除: ${clientId}`);
+    } catch (error) {
+        console.error('删除数据库记录失败:', error);
+        throw error;
+    } finally {
+        if (connection) connection.release();
+    }
+}
+
 // ClientManager
 const TCP_LISTEN_PORT = parseInt(process.env.TCP_PORT) || 9999;
 
@@ -294,6 +305,7 @@ class ClientManager {
         this.knownClients = new Map();          // 已知客户端详细信息 (id -> {ip, port, lastSeen})
         this.webClients = new Set();
         this.heartbeatInterval = 30000;
+        this.reconnectInterval = 60000;         // 离线重连间隔：1分钟
         this.tcpServer = null;
 
         this.init();
@@ -306,6 +318,12 @@ class ClientManager {
 
         this.startTcpServer();
         this.startHeartbeat();
+
+        // ★ 启动后逐个连接已知客户端
+        await this.connectAllKnownClients();
+
+        // ★ 启动定时重连离线客户端
+        this.startReconnectTimer();
     }
 
     startTcpServer() {
@@ -478,6 +496,65 @@ class ClientManager {
                 }
             });
         }, this.heartbeatInterval);
+    }
+
+    // ★ 新增：逐个连接所有已知客户端
+    async connectAllKnownClients() {
+        console.log('开始逐个连接已知客户端...');
+        const entries = Array.from(this.knownClients.entries());
+        for (const [clientId, info] of entries) {
+            if (this.clients.has(clientId) && this.clients.get(clientId).status === 'online') {
+                continue;
+            }
+            console.log(`尝试连接已知客户端: ${clientId}`);
+            await this.tryConnect(info.ip, info.port);
+            await new Promise(resolve => setTimeout(resolve, 100)); // 避免并发过高
+        }
+        console.log('已知客户端连接尝试完成');
+    }
+
+    // ★ 新增：启动定时重连离线客户端
+    startReconnectTimer() {
+        setInterval(() => {
+            this.reconnectOfflineClients();
+        }, this.reconnectInterval);
+    }
+
+    // ★ 新增：重连所有离线客户端
+    async reconnectOfflineClients() {
+        console.log('检查离线客户端并尝试重连...');
+        for (const [clientId, info] of this.knownClients.entries()) {
+            const client = this.clients.get(clientId);
+            if (!client || client.status === 'offline') {
+                console.log(`尝试重连离线客户端: ${clientId}`);
+                await this.tryConnect(info.ip, info.port);
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+    }
+
+    // ★ 新增：删除已知客户端（内存 + 数据库 + 断开连接）
+    async deleteKnownClient(clientId) {
+        // 1. 如果在线，断开连接
+        const client = this.clients.get(clientId);
+        if (client) {
+            client.socket.destroy();
+            this.clients.delete(clientId);
+        }
+
+        // 2. 从 knownClients 中删除
+        this.knownClients.delete(clientId);
+
+        // 3. 从数据库删除
+        await deleteKnownClientFromDB(clientId);
+
+        // 4. 通知所有 Web 客户端
+        this.broadcastToWeb({
+            type: 'client_deleted',
+            clientId: clientId
+        });
+
+        console.log(`客户端 ${clientId} 已被完全删除`);
     }
 
     getClientInfo(client) {
@@ -682,7 +759,6 @@ const clientManager = new ClientManager();
 
 // 辅助函数：根据 clientId 获取客户端信息（支持离线）
 function getClientInfoById(clientId) {
-    // 先尝试在线客户端
     let client = clientManager.clients.get(clientId);
     if (client) {
         return {
@@ -692,14 +768,13 @@ function getClientInfoById(clientId) {
             logDir: client.logDir
         };
     }
-    // 再尝试已知客户端（离线）
     const known = clientManager.knownClients.get(clientId);
     if (known) {
         return {
             exists: true,
             isOnline: false,
             ip: known.ip,
-            logDir: alistClient.basePath   // 使用默认日志目录
+            logDir: alistClient.basePath
         };
     }
     return { exists: false };
@@ -755,6 +830,25 @@ wss.on('connection', (ws) => {
                     ws.send(JSON.stringify({ type: 'disconnected', clientId: data.clientId }));
                     break;
 
+                // ★ 新增：删除客户端（含数据库）
+                case 'delete_client':
+                    try {
+                        await clientManager.deleteKnownClient(data.clientId);
+                        ws.send(JSON.stringify({
+                            type: 'delete_result',
+                            success: true,
+                            clientId: data.clientId
+                        }));
+                    } catch (e) {
+                        ws.send(JSON.stringify({
+                            type: 'delete_result',
+                            success: false,
+                            clientId: data.clientId,
+                            error: e.message
+                        }));
+                    }
+                    break;
+
                 default:
                     ws.send(JSON.stringify({ type: 'error', message: '未知的命令类型' }));
             }
@@ -775,7 +869,6 @@ app.get('/api/clients', (req, res) => {
     res.json(clientManager.getAllClients());
 });
 
-// 日志列表 API（支持离线）
 app.get('/api/clients/:clientId/logs', async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
@@ -791,7 +884,6 @@ app.get('/api/clients/:clientId/logs', async (req, res) => {
     }
 });
 
-// 日志内容 API（返回 JSON 格式，支持离线）
 app.get('/api/clients/:clientId/logs/:filename', async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
@@ -807,7 +899,6 @@ app.get('/api/clients/:clientId/logs/:filename', async (req, res) => {
     }
 });
 
-// 日志下载 API（无需修改，但同样支持离线）
 app.get('/api/clients/:clientId/logs/:filename/download', async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
@@ -824,7 +915,6 @@ app.get('/api/clients/:clientId/logs/:filename/download', async (req, res) => {
     }
 });
 
-// 日志 raw 内容 API（返回纯文本，支持离线）
 app.get('/api/clients/:clientId/logs/:filename/raw', async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
@@ -840,7 +930,6 @@ app.get('/api/clients/:clientId/logs/:filename/raw', async (req, res) => {
     }
 });
 
-// 日志上传 API
 app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: '10mb' }), async (req, res) => {
     const ip = req.params.ip;
     const clientId = Array.from(clientManager.clients.keys()).find(id => id.startsWith(ip));

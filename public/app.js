@@ -1,163 +1,424 @@
-let ws;
+// 全局变量
+let ws = null;
 let clients = [];
 let currentClientId = null;
-let currentLogs = [];
+let reconnectTimer = null;
+const WS_URL = `ws://${window.location.host}`;
 
+// DOM 元素
 const wsStatus = document.getElementById('wsStatus');
 const wsStatusText = document.getElementById('wsStatusText');
 const clientsTable = document.getElementById('clientsTable');
-const logsTable = document.getElementById('logsTable');
 const logClientSelect = document.getElementById('logClientSelect');
+const logsTable = document.getElementById('logsTable');
+const scanProgress = document.getElementById('scanProgress');
 const toast = document.getElementById('toast');
 
-function connectWebSocket() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${window.location.host}`);
+// 页面切换
+document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+        const page = item.dataset.page;
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+        document.getElementById(page + 'Page').style.display = 'block';
+        if (page === 'logs') {
+            populateClientSelect();
+        }
+    });
+});
 
+// 初始化 WebSocket
+function connectWebSocket() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+
+    ws = new WebSocket(WS_URL);
     ws.onopen = () => {
         wsStatus.classList.add('connected');
         wsStatusText.textContent = '已连接';
-        showToast('WebSocket 已连接', 'success');
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        showToast('已连接到服务器', 'success');
     };
 
     ws.onclose = () => {
         wsStatus.classList.remove('connected');
-        wsStatusText.textContent = '未连接';
-        setTimeout(connectWebSocket, 3000);
+        wsStatusText.textContent = '断开，尝试重连...';
+        reconnectTimer = setTimeout(connectWebSocket, 3000);
     };
 
-    ws.onerror = (error) => {
-        console.error('WebSocket 错误:', error);
+    ws.onerror = (err) => {
+        console.error('WebSocket 错误:', err);
     };
 
     ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleWebSocketMessage(data);
+        try {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+        } catch (e) {
+            console.error('解析消息失败:', e);
+        }
     };
 }
 
+// 处理 WebSocket 消息
 function handleWebSocketMessage(data) {
     switch (data.type) {
         case 'clients_list':
             clients = data.clients;
-            updateClientsTable();
-            updateLogClientSelect();
+            renderClientsTable();
+            populateClientSelect();
             break;
-
         case 'client_connected':
-            showToast(`客户端 ${data.client.ip}:${data.client.port} 已连接`, 'success');
-            break;
-
-        case 'client_disconnected':
-            showToast(`客户端 ${data.clientId} 已断开`, 'error');
-            break;
-
         case 'client_offline':
-            const offlineClient = clients.find(c => c.id === data.clientId);
-            if (offlineClient) {
-                offlineClient.status = 'offline';
-                updateClientsTable();
+        case 'client_deleted':      // 新增：处理删除广播
+            // 更新客户端列表
+            if (data.client) {
+                updateClientInList(data.client);
+            } else if (data.clientId) {
+                removeClientFromList(data.clientId);
             }
+            populateClientSelect();
             break;
-
         case 'client_response':
-            handleClientResponse(data.clientId, data.response);
-            break;
-
-        case 'command_result':
-            if (data.result.success) {
-                showToast('命令发送成功', 'success');
-            } else {
-                showToast(`命令发送失败: ${data.result.error}`, 'error');
+            console.log('客户端响应:', data);
+            if (data.response && data.response.data) {
+                const client = clients.find(c => c.id === data.clientId);
+                if (client) {
+                    if (data.response.data.recording !== undefined) {
+                        client.recording = data.response.data.recording;
+                    }
+                    if (data.response.data.upload_enabled !== undefined) {
+                        client.uploadEnabled = data.response.data.upload_enabled;
+                    }
+                    renderClientsTable();
+                }
             }
             break;
-
+        case 'command_result':
+            console.log('命令结果:', data.result);
+            if (data.result.success) {
+                showToast('命令已发送', 'success');
+            } else {
+                showToast('命令发送失败: ' + data.result.error, 'error');
+            }
+            break;
         case 'broadcast_result':
             const successCount = data.results.filter(r => r.success).length;
-            showToast(`广播命令完成: ${successCount}/${data.results.length} 成功`, 'success');
+            showToast(`广播完成: ${successCount}/${data.results.length} 成功`, 'success');
             break;
-
         case 'scan_complete':
-            document.getElementById('scanProgress').classList.remove('show');
-            if (data.found.length > 0) {
-                showToast(`扫描完成，发现 ${data.found.length} 个客户端`, 'success');
-            } else {
-                showToast('扫描完成，未发现客户端', 'error');
-            }
+            scanProgress.classList.remove('show');
+            showToast(`扫描完成，发现 ${data.found.length} 个客户端`, 'success');
             break;
-
+        case 'scan_error':
+            scanProgress.classList.remove('show');
+            showToast('扫描失败: ' + data.message, 'error');
+            break;
         case 'connect_result':
-            if (data.client) {
-                showToast(`成功连接到 ${data.client.ip}:${data.client.port}`, 'success');
-                hideModal('connectModal');
+            showToast(`成功连接 ${data.client.ip}:${data.client.port}`, 'success');
+            hideModal('connectModal');
+            break;
+        case 'connect_error':
+            showToast('连接失败: ' + data.message, 'error');
+            break;
+        case 'delete_result':        // 新增：处理删除结果
+            if (data.success) {
+                showToast('客户端已删除', 'success');
             } else {
-                showToast('连接失败', 'error');
+                showToast('删除失败: ' + data.error, 'error');
             }
             break;
-
-        case 'disconnected':
-            showToast('客户端已断开连接', 'success');
-            break;
-
-        case 'client_deleted':
-            showToast(`客户端 ${data.clientId} 已删除`, 'success');
-            // 更新客户端列表
-            clients = clients.filter(c => c.id !== data.clientId);
-            updateClientsTable();
-            updateLogClientSelect();
-            break;
-
-        case 'error':
-            showToast(`错误: ${data.message}`, 'error');
-            break;
+        default:
+            console.log('未知消息类型:', data);
     }
 }
 
-function handleClientResponse(clientId, response) {
-    if (response.status === 'ok') {
-        const client = clients.find(c => c.id === clientId);
-        if (client && response.data) {
-            if (response.data.recording !== undefined) {
-                client.recording = response.data.recording;
-            }
-            if (response.data.upload_enabled !== undefined) {
-                client.uploadEnabled = response.data.upload_enabled;
-            }
-            updateClientsTable();
-        }
+// 更新客户端列表中的某个客户端
+function updateClientInList(client) {
+    const index = clients.findIndex(c => c.id === client.id);
+    if (index >= 0) {
+        clients[index] = client;
+    } else {
+        clients.push(client);
     }
+    renderClientsTable();
 }
 
-function updateClientsTable() {
+// 从列表中移除客户端
+function removeClientFromList(clientId) {
+    clients = clients.filter(c => c.id !== clientId);
+    renderClientsTable();
+    populateClientSelect();
+}
+
+// 渲染客户端表格
+function renderClientsTable() {
     if (clients.length === 0) {
-        clientsTable.innerHTML = '<tr><td colspan="7" class="empty-state">暂无客户端连接</td></tr>';
+        clientsTable.innerHTML = '<tr><td colspan="7" class="empty-state">暂无客户端</td></tr>';
         return;
     }
 
-    clientsTable.innerHTML = clients.map(client => `
-        <tr>
+    let html = '';
+    clients.forEach(client => {
+        const statusClass = client.status === 'online' ? 'status-online' : 'status-offline';
+        const recordClass = client.recording ? 'status-recording' : 'status-paused';
+        const uploadClass = client.uploadEnabled ? 'status-recording' : 'status-paused';
+        const lastSeen = client.lastSeen ? new Date(client.lastSeen).toLocaleString() : '从未';
+
+        html += `<tr>
             <td>${client.ip}</td>
             <td>${client.port}</td>
-            <td><span class="status-badge ${client.status === 'online' ? 'status-online' : 'status-offline'}">${client.status === 'online' ? '在线' : '离线'}</span></td>
-            <td><span class="status-badge ${client.recording ? 'status-recording' : 'status-paused'}">${client.recording ? '录制中' : '已暂停'}</span></td>
-            <td><span class="status-badge ${client.uploadEnabled ? 'status-online' : 'status-offline'}">${client.uploadEnabled ? '启用' : '禁用'}</span></td>
-            <td>${new Date(client.lastSeen).toLocaleString()}</td>
-            <td class="action-btns">
-                <button class="btn btn-primary btn-sm" onclick="showClientDetails('${client.id}')">详情</button>
-                <button class="btn btn-danger btn-sm" onclick="disconnectClient('${client.id}')">断开</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}')">删除</button>
+            <td><span class="status-badge ${statusClass}">${client.status}</span></td>
+            <td><span class="status-badge ${recordClass}">${client.recording ? '录制中' : '已暂停'}</span></td>
+            <td><span class="status-badge ${uploadClass}">${client.uploadEnabled ? '已启用' : '未启用'}</span></td>
+            <td>${lastSeen}</td>
+            <td>
+                <div class="action-btns">
+                    <button class="btn btn-sm btn-primary" onclick="showClientModal('${client.id}')">详情</button>
+                    ${client.status === 'online' ? 
+                        `<button class="btn btn-sm btn-danger" onclick="disconnectClient('${client.id}')">断开</button>` : ''}
+                    <button class="btn btn-sm btn-danger" onclick="deleteClient('${client.id}')">删除</button>
+                </div>
             </td>
-        </tr>
-    `).join('');
+        </tr>`;
+    });
+    clientsTable.innerHTML = html;
 }
 
-function updateLogClientSelect() {
-    const currentValue = logClientSelect.value;
-    logClientSelect.innerHTML = '<option value="">选择客户端</option>' +
-        clients.map(client => `<option value="${client.id}">${client.ip}:${client.port}</option>`).join('');
-    logClientSelect.value = currentValue;
+// 填充日志页面的客户端下拉框
+function populateClientSelect() {
+    let html = '<option value="">选择客户端</option>';
+    clients.forEach(client => {
+        html += `<option value="${client.id}">${client.ip}:${client.port} (${client.status})</option>`;
+    });
+    logClientSelect.innerHTML = html;
 }
 
+// 显示客户端详情模态框
+function showClientModal(clientId) {
+    const client = clients.find(c => c.id === clientId);
+    if (!client) return;
+
+    currentClientId = clientId;
+    document.getElementById('clientModalTitle').textContent = `客户端: ${client.ip}:${client.port}`;
+    
+    // 概览信息
+    const infoHtml = `
+        <p><strong>ID:</strong> ${client.id}</p>
+        <p><strong>IP:</strong> ${client.ip}</p>
+        <p><strong>端口:</strong> ${client.port}</p>
+        <p><strong>状态:</strong> ${client.status}</p>
+        <p><strong>录制状态:</strong> ${client.recording ? '录制中' : '已暂停'}</p>
+        <p><strong>上传状态:</strong> ${client.uploadEnabled ? '已启用' : '未启用'}</p>
+        <p><strong>最后连接:</strong> ${client.lastSeen ? new Date(client.lastSeen).toLocaleString() : '从未'}</p>
+    `;
+    document.getElementById('clientInfo').innerHTML = infoHtml;
+
+    // 加载客户端日志列表
+    loadClientLogs(clientId);
+
+    document.getElementById('clientModal').classList.add('show');
+}
+
+// 加载客户端日志
+async function loadClientLogs(clientId) {
+    const client = clients.find(c => c.id === clientId);
+    if (!client) return;
+
+    try {
+        const response = await fetch(`/api/clients/${clientId}/logs`);
+        const logs = await response.json();
+        if (logs.length === 0) {
+            document.getElementById('clientLogs').innerHTML = '<p>暂无日志文件</p>';
+            return;
+        }
+        let html = '<ul style="list-style: none; padding: 0;">';
+        logs.forEach(log => {
+            html += `<li style="padding: 0.5rem; border-bottom: 1px solid #eee; display: flex; justify-content: space-between;">
+                <span>${log.filename}</span>
+                <div class="action-btns">
+                    <button class="btn btn-sm btn-primary" onclick="viewLog('${clientId}', '${log.filename}')">查看</button>
+                    <button class="btn btn-sm btn-success" onclick="downloadLog('${clientId}', '${log.filename}')">下载</button>
+                </div>
+            </li>`;
+        });
+        html += '</ul>';
+        document.getElementById('clientLogs').innerHTML = html;
+    } catch (e) {
+        console.error('加载日志失败:', e);
+        document.getElementById('clientLogs').innerHTML = '<p>加载失败</p>';
+    }
+}
+
+// 模态框标签切换
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tabName + 'Tab').classList.add('active');
+    });
+});
+
+// 发送命令给当前选中的客户端
+function sendCommand(action, params = {}) {
+    if (!currentClientId) {
+        showToast('请先选择客户端', 'error');
+        return;
+    }
+    ws.send(JSON.stringify({
+        type: 'command',
+        clientId: currentClientId,
+        command: { action, ...params }
+    }));
+}
+
+// 广播命令
+function broadcastCommand(action, params = {}) {
+    ws.send(JSON.stringify({
+        type: 'broadcast_command',
+        command: { action, ...params }
+    }));
+}
+
+// 设置服务器地址
+function setServer() {
+    const host = document.getElementById('serverHost').value;
+    const port = document.getElementById('serverPort').value;
+    if (!host || !port) {
+        showToast('请填写服务器地址和端口', 'error');
+        return;
+    }
+    sendCommand('set_server', { host, port: parseInt(port) });
+}
+
+// 断开客户端连接
+function disconnectClient(clientId) {
+    if (!confirm('确定断开该客户端连接吗？')) return;
+    ws.send(JSON.stringify({
+        type: 'disconnect_client',
+        clientId: clientId
+    }));
+}
+
+// 删除客户端（新增功能）
+function deleteClient(clientId) {
+    if (!confirm('确定要删除该客户端吗？此操作会从数据库中永久移除记录。')) return;
+    ws.send(JSON.stringify({
+        type: 'delete_client',
+        clientId: clientId
+    }));
+    // 如果当前打开的详情是该客户端，关闭模态框
+    if (currentClientId === clientId) {
+        hideModal('clientModal');
+    }
+}
+
+// 手动连接
+function manualConnect() {
+    const ip = document.getElementById('connectIp').value;
+    const port = parseInt(document.getElementById('connectPort').value);
+    if (!ip || !port) {
+        showToast('请填写 IP 和端口', 'error');
+        return;
+    }
+    ws.send(JSON.stringify({
+        type: 'manual_connect',
+        ip, port
+    }));
+}
+
+// 扫描网络
+function scanNetwork() {
+    const startIp = document.getElementById('scanStartIp').value;
+    const endIp = document.getElementById('scanEndIp').value;
+    const portsStr = document.getElementById('scanPorts').value;
+    if (!startIp || !endIp) {
+        showToast('请填写起始和结束 IP', 'error');
+        return;
+    }
+    const ports = portsStr.split(',').map(p => parseInt(p.trim())).filter(p => !isNaN(p));
+    ws.send(JSON.stringify({
+        type: 'scan_network',
+        startIp, endIp, ports
+    }));
+    scanProgress.classList.add('show');
+    hideModal('scanModal');
+}
+
+// 刷新日志列表（日志页面）
+async function refreshLogs() {
+    const clientId = logClientSelect.value;
+    if (!clientId) {
+        showToast('请选择客户端', 'error');
+        return;
+    }
+    try {
+        const response = await fetch(`/api/clients/${clientId}/logs`);
+        const logs = await response.json();
+        renderLogsTable(logs, clientId);
+    } catch (e) {
+        console.error('刷新日志失败:', e);
+        showToast('刷新失败', 'error');
+    }
+}
+
+// 渲染日志表格
+function renderLogsTable(logs, clientId) {
+    if (logs.length === 0) {
+        logsTable.innerHTML = '<tr><td colspan="4" class="empty-state">暂无日志文件</td></tr>';
+        return;
+    }
+    let html = '';
+    logs.forEach(log => {
+        const size = formatFileSize(log.size);
+        const time = log.uploadTime ? new Date(log.uploadTime).toLocaleString() : '未知';
+        html += `<tr>
+            <td>${log.filename}</td>
+            <td>${size}</td>
+            <td>${time}</td>
+            <td>
+                <div class="action-btns">
+                    <button class="btn btn-sm btn-primary" onclick="viewLog('${clientId}', '${log.filename}')">查看</button>
+                    <button class="btn btn-sm btn-success" onclick="downloadLog('${clientId}', '${log.filename}')">下载</button>
+                </div>
+            </td>
+        </tr>`;
+    });
+    logsTable.innerHTML = html;
+}
+
+// 查看日志内容
+async function viewLog(clientId, filename) {
+    try {
+        const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
+        const content = await response.text();
+        document.getElementById('logModalTitle').textContent = filename;
+        document.getElementById('logContent').textContent = content;
+        document.getElementById('logModal').classList.add('show');
+    } catch (e) {
+        console.error('查看日志失败:', e);
+        showToast('查看失败', 'error');
+    }
+}
+
+// 下载日志
+function downloadLog(clientId, filename) {
+    window.open(`/api/clients/${clientId}/logs/${filename}/download`, '_blank');
+}
+
+// 格式化文件大小
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+// 显示模态框
 function showConnectModal() {
     document.getElementById('connectModal').classList.add('show');
 }
@@ -170,261 +431,15 @@ function hideModal(modalId) {
     document.getElementById(modalId).classList.remove('show');
 }
 
-function manualConnect() {
-    const ip = document.getElementById('connectIp').value.trim();
-    const port = parseInt(document.getElementById('connectPort').value);
-
-    if (!ip) {
-        showToast('请输入 IP 地址', 'error');
-        return;
-    }
-
-    ws.send(JSON.stringify({
-        type: 'manual_connect',
-        ip,
-        port
-    }));
+// 保存设置（示例）
+function saveSettings() {
+    const interval = document.getElementById('heartbeatInterval').value;
+    const timeout = document.getElementById('connectTimeout').value;
+    showToast(`设置已保存 (心跳: ${interval}ms, 超时: ${timeout}ms)`, 'success');
+    // 实际应用中可能需要通过 WebSocket 发送配置命令
 }
 
-function scanNetwork() {
-    const startIp = document.getElementById('scanStartIp').value.trim();
-    const endIp = document.getElementById('scanEndIp').value.trim();
-    const portsStr = document.getElementById('scanPorts').value.trim();
-
-    if (!startIp || !endIp) {
-        showToast('请输入起始和结束 IP', 'error');
-        return;
-    }
-
-    const ports = portsStr.split(',').map(p => parseInt(p.trim())).filter(p => !isNaN(p));
-
-    document.getElementById('scanProgress').classList.add('show');
-
-    ws.send(JSON.stringify({
-        type: 'scan_network',
-        startIp,
-        endIp,
-        ports
-    }));
-
-    hideModal('scanModal');
-}
-
-function showClientDetails(clientId) {
-    currentClientId = clientId;
-    const client = clients.find(c => c.id === clientId);
-    if (!client) return;
-
-    document.getElementById('clientModalTitle').textContent = `客户端详情 - ${client.ip}:${client.port}`;
-    
-    document.getElementById('clientInfo').innerHTML = `
-        <div class="form-group">
-            <label>IP 地址</label>
-            <input type="text" value="${client.ip}" readonly>
-        </div>
-        <div class="form-group">
-            <label>端口</label>
-            <input type="text" value="${client.port}" readonly>
-        </div>
-        <div class="form-group">
-            <label>状态</label>
-            <input type="text" value="${client.status === 'online' ? '在线' : '离线'}" readonly>
-        </div>
-        <div class="form-group">
-            <label>录制状态</label>
-            <input type="text" value="${client.recording ? '录制中' : '已暂停'}" readonly>
-        </div>
-        <div class="form-group">
-            <label>上传状态</label>
-            <input type="text" value="${client.uploadEnabled ? '启用' : '禁用'}" readonly>
-        </div>
-        <div class="form-group">
-            <label>最后连接时间</label>
-            <input type="text" value="${new Date(client.lastSeen).toLocaleString()}" readonly>
-        </div>
-    `;
-
-    loadClientLogs(clientId);
-    document.getElementById('clientModal').classList.add('show');
-}
-
-function sendCommand(action) {
-    if (!currentClientId) return;
-
-    const command = { action };
-    
-    if (action === 'set_server') {
-        const host = document.getElementById('serverHost').value.trim();
-        const port = parseInt(document.getElementById('serverPort').value);
-        if (!host) {
-            showToast('请输入服务器地址', 'error');
-            return;
-        }
-        command.host = host;
-        command.port = port;
-    }
-
-    ws.send(JSON.stringify({
-        type: 'command',
-        clientId: currentClientId,
-        command
-    }));
-}
-
-function setServer() {
-    sendCommand('set_server');
-}
-
-function broadcastCommand(action) {
-    ws.send(JSON.stringify({
-        type: 'broadcast_command',
-        command: { action }
-    }));
-}
-
-function disconnectClient(clientId) {
-    if (confirm('确定要断开此客户端吗？')) {
-        ws.send(JSON.stringify({
-            type: 'disconnect_client',
-            clientId
-        }));
-    }
-}
-
-function deleteClient(clientId) {
-    if (confirm('确定要删除此客户端吗？这将从已知客户端列表中移除它。')) {
-        ws.send(JSON.stringify({
-            type: 'delete_client',
-            clientId
-        }));
-    }
-}
-
-async function loadClientLogs(clientId) {
-    try {
-        const response = await fetch(`/api/clients/${clientId}/logs`);
-        const logs = await response.json();
-        currentLogs = logs;
-        updateLogsTable(logs);
-    } catch (e) {
-        document.getElementById('clientLogs').innerHTML = '<p class="empty-state">加载日志失败</p>';
-    }
-}
-
-function updateLogsTable(logs) {
-    const container = document.getElementById('clientLogs');
-    
-    if (logs.length === 0) {
-        container.innerHTML = '<p class="empty-state">暂无日志文件</p>';
-        return;
-    }
-
-    container.innerHTML = `
-        <table>
-            <thead>
-                <tr>
-                    <th>文件名</th>
-                    <th>大小</th>
-                    <th>上传时间</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${logs.map(log => `
-                    <tr>
-                        <td>${log.filename}</td>
-                        <td>${formatFileSize(log.size)}</td>
-                        <td>${new Date(log.uploadTime).toLocaleString()}</td>
-                        <td class="action-btns">
-                            <button class="btn btn-primary btn-sm" onclick="viewLog('${log.filename}')">查看</button>
-                            <button class="btn btn-success btn-sm" onclick="downloadLog('${log.filename}')">下载</button>
-                        </td>
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-async function viewLog(filename) {
-    const clientId = logClientSelect.value || currentClientId;
-    if (!clientId) {
-        showToast('请先选择客户端', 'error');
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/clients/${clientId}/logs/${filename}`);
-        const data = await response.json();
-        
-        document.getElementById('logModalTitle').textContent = `日志内容 - ${filename}`;
-        document.getElementById('logContent').textContent = data.content;
-        document.getElementById('logModal').classList.add('show');
-    } catch (e) {
-        showToast('加载日志失败', 'error');
-    }
-}
-
-function downloadLog(filename) {
-    const clientId = logClientSelect.value || currentClientId;
-    if (!clientId) {
-        showToast('请先选择客户端', 'error');
-        return;
-    }
-
-    window.open(`/api/clients/${clientId}/logs/${filename}/download`, '_blank');
-}
-
-async function refreshLogs() {
-    const clientId = logClientSelect.value;
-    if (!clientId) {
-        showToast('请先选择客户端', 'error');
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/clients/${clientId}/logs`);
-        const logs = await response.json();
-        currentLogs = logs;
-        
-        const searchTerm = document.getElementById('logSearch').value.toLowerCase();
-        const filteredLogs = searchTerm 
-            ? logs.filter(log => log.filename.toLowerCase().includes(searchTerm))
-            : logs;
-        
-        updateMainLogsTable(filteredLogs, clientId);
-    } catch (e) {
-        showToast('刷新日志失败', 'error');
-    }
-}
-
-function updateMainLogsTable(logs, clientId) {
-    if (logs.length === 0) {
-        logsTable.innerHTML = '<tr><td colspan="4" class="empty-state">暂无日志文件</td></tr>';
-        return;
-    }
-
-    logsTable.innerHTML = logs.map(log => `
-        <tr>
-            <td>${log.filename}</td>
-            <td>${formatFileSize(log.size)}</td>
-            <td>${new Date(log.uploadTime).toLocaleString()}</td>
-            <td class="action-btns">
-                <button class="btn btn-primary btn-sm" onclick="viewLog('${log.filename}')">查看</button>
-                <button class="btn btn-success btn-sm" onclick="downloadLog('${log.filename}')">下载</button>
-            </td>
-        </tr>
-    `).join('');
-}
-
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
+// Toast 提示
 function showToast(message, type = 'success') {
     toast.textContent = message;
     toast.className = `toast ${type} show`;
@@ -433,51 +448,18 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
-function saveSettings() {
-    showToast('设置已保存', 'success');
-}
-
-document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', () => {
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-        
-        const page = item.dataset.page;
-        document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
-        document.getElementById(page + 'Page').style.display = 'block';
-    });
-});
-
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        const tabGroup = tab.parentElement;
-        tabGroup.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        
-        const tabName = tab.dataset.tab;
-        const tabContent = document.getElementById(tabName + 'Tab');
-        tabContent.parentElement.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        tabContent.classList.add('active');
-    });
-});
-
+// 日志页面客户端选择变化
 logClientSelect.addEventListener('change', refreshLogs);
 
-document.getElementById('logSearch').addEventListener('input', (e) => {
-    const searchTerm = e.target.value.toLowerCase();
-    const filteredLogs = searchTerm 
-        ? currentLogs.filter(log => log.filename.toLowerCase().includes(searchTerm))
-        : currentLogs;
-    updateMainLogsTable(filteredLogs, logClientSelect.value);
-});
-
-document.querySelectorAll('.modal').forEach(modal => {
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.classList.remove('show');
-        }
+// 日志搜索过滤（简单实现）
+document.getElementById('logSearch')?.addEventListener('input', (e) => {
+    const keyword = e.target.value.toLowerCase();
+    const rows = logsTable.querySelectorAll('tr');
+    rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(keyword) ? '' : 'none';
     });
 });
 
+// 初始化连接
 connectWebSocket();
-
