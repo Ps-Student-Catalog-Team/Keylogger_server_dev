@@ -73,8 +73,7 @@ function handleWebSocketMessage(data) {
             break;
         case 'client_connected':
         case 'client_offline':
-        case 'client_deleted':      // 新增：处理删除广播
-            // 更新客户端列表
+        case 'client_deleted':
             if (data.client) {
                 updateClientInList(data.client);
             } else if (data.clientId) {
@@ -124,7 +123,7 @@ function handleWebSocketMessage(data) {
         case 'connect_error':
             showToast('连接失败: ' + data.message, 'error');
             break;
-        case 'delete_result':        // 新增：处理删除结果
+        case 'delete_result':
             if (data.success) {
                 showToast('客户端已删除', 'success');
             } else {
@@ -242,6 +241,7 @@ async function loadClientLogs(clientId) {
                 <div class="action-btns">
                     <button class="btn btn-sm btn-primary" onclick="viewLog('${clientId}', '${log.filename}')">查看</button>
                     <button class="btn btn-sm btn-success" onclick="downloadLog('${clientId}', '${log.filename}')">下载</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteLog('${clientId}', '${log.filename}')">删除</button>
                 </div>
             </li>`;
         });
@@ -312,7 +312,6 @@ function deleteClient(clientId) {
         type: 'delete_client',
         clientId: clientId
     }));
-    // 如果当前打开的详情是该客户端，关闭模态框
     if (currentClientId === clientId) {
         hideModal('clientModal');
     }
@@ -367,7 +366,7 @@ async function refreshLogs() {
     }
 }
 
-// 渲染日志表格
+// 渲染日志表格（包含删除按钮）
 function renderLogsTable(logs, clientId) {
     if (logs.length === 0) {
         logsTable.innerHTML = '<tr><td colspan="4" class="empty-state">暂无日志文件</td></tr>';
@@ -385,6 +384,7 @@ function renderLogsTable(logs, clientId) {
                 <div class="action-btns">
                     <button class="btn btn-sm btn-primary" onclick="viewLog('${clientId}', '${log.filename}')">查看</button>
                     <button class="btn btn-sm btn-success" onclick="downloadLog('${clientId}', '${log.filename}')">下载</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteLog('${clientId}', '${log.filename}')">删除</button>
                 </div>
             </td>
         </tr>`;
@@ -409,6 +409,35 @@ async function viewLog(clientId, filename) {
 // 下载日志
 function downloadLog(clientId, filename) {
     window.open(`/api/clients/${clientId}/logs/${filename}/download`, '_blank');
+}
+
+// 删除日志
+async function deleteLog(clientId, filename) {
+    if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/clients/${clientId}/logs/${filename}`, {
+            method: 'DELETE'
+        });
+        const result = await response.json();
+        if (response.ok) {
+            showToast(`日志 ${filename} 已删除`, 'success');
+            // 刷新当前显示的日志列表
+            if (currentClientId === clientId && document.getElementById('clientModal').classList.contains('show')) {
+                loadClientLogs(clientId);
+            }
+            if (logClientSelect.value === clientId) {
+                refreshLogs();
+            }
+        } else {
+            showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
+        }
+    } catch (e) {
+        console.error('删除日志失败:', e);
+        showToast('删除请求失败', 'error');
+    }
 }
 
 // 格式化文件大小

@@ -261,6 +261,22 @@ class AlistClient {
         this.logger.info(`文件上传成功: ${fullPath}`);
         return { success: true, filename };
     }
+
+    async deleteFile(filePath) {
+    const fullPath = this._getFullPath(filePath);
+    const lastSlash = fullPath.lastIndexOf('/');
+    const dir = lastSlash > 0 ? fullPath.substring(0, lastSlash) : '/';
+    const filename = fullPath.substring(lastSlash + 1);
+
+    await this._request('POST', '/api/fs/remove', {
+        dir: dir,
+        names: [filename]
+    });
+
+    this.logger.info(`文件已删除: ${fullPath}`);
+    return { success: true };
+}
+
 }
 
 const alistClient = new AlistClient(CONFIG.alist);
@@ -989,6 +1005,19 @@ app.get('/api/clients/:clientId/logs/:filename/raw', asyncHandler(async (req, re
     const filePath = `${clientInfo.logDir}/${req.params.filename}`;
     const content = await alistClient.readFile(filePath);
     res.type('text/plain').send(content);
+}));
+
+app.delete('/api/clients/:clientId/logs/:filename', asyncHandler(async (req, res) => {
+    const clientInfo = getClientInfoById(req.params.clientId);
+    if (!clientInfo.exists) {
+        return res.status(404).json({ error: '客户端不存在' });
+    }
+    const filePath = `${clientInfo.logDir}/${req.params.filename}`;
+    
+    await alistClient.deleteFile(filePath);
+    logger.info(`日志文件已删除: ${filePath}`, { clientId: req.params.clientId });
+    
+    res.json({ success: true, message: '文件已删除' });
 }));
 
 app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uploadSizeLimit }), asyncHandler(async (req, res) => {
