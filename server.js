@@ -11,6 +11,7 @@ const jschardet = require('jschardet');
 const iconv = require('iconv-lite');
 const pLimit = require('p-limit');
 const winston = require('winston');
+const open = require('open');
 require('dotenv').config();
 
 //配置常量
@@ -1037,7 +1038,18 @@ async function shutdown() {
 }
 
 //启动服务
-server.listen(CONFIG.httpPort, () => {
+server.listen(CONFIG.httpPort, async () => {
     logger.info(`HTTP 服务运行在端口 ${CONFIG.httpPort}`);
-    logger.info(`访问 http://localhost:${CONFIG.httpPort} 打开管理界面`);
+    const url = `http://localhost:${CONFIG.httpPort}`;
+    logger.info(`访问 ${url} 打开管理界面`);
+
+    // 自动打开浏览器
+    if (process.env.NODE_ENV !== 'production') {
+        try {
+            await open(url);
+            logger.info('已打开浏览器');
+        } catch (err) {
+            logger.warn('打开浏览器失败，请手动访问', { error: err.message });
+        }
+    }
 });
