@@ -9,9 +9,88 @@ const axios = require('axios');
 const mysql = require('mysql2/promise');
 const jschardet = require('jschardet');
 const iconv = require('iconv-lite');
+const pLimit = require('p-limit');
+const winston = require('winston');
 require('dotenv').config();
 
-// 初始化 Express
+//配置常量
+const CONFIG = {
+    // Alist 连接配置
+    alist: {
+        url: process.env.ALIST_URL || 'http://10.88.202.73:5244',
+        basePath: process.env.ALIST_BASE_PATH || '/学生目录/log',
+        username: process.env.ALIST_USERNAME || 'admin',
+        password: process.env.ALIST_PASSWORD || 'adm1n5',
+        tokenRefreshMargin: 5 * 60 * 1000,      // token 提前5分钟刷新
+    },
+    // 数据库配置
+    db: {
+        host: process.env.DB_HOST || 'localhost',
+        port: parseInt(process.env.DB_PORT) || 3306,
+        user: process.env.DB_USER || 'log_manager',
+        password: process.env.DB_PASSWORD || '',
+        database: process.env.DB_NAME || 'client_logs',
+        charset: 'utf8mb4',
+        connectionLimit: 10,
+        queueLimit: 0,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10000,
+        // 查询重试配置
+        maxRetries: 3,
+        retryDelay: 1000,
+    },
+    // TCP 服务器配置
+    tcpPort: parseInt(process.env.TCP_PORT) || 9999,
+    // HTTP 服务端口
+    httpPort: parseInt(process.env.PORT) || 3232,
+    // 心跳与重连
+    heartbeatInterval: 30000,
+    reconnectInterval: 60000,           // 定时重连间隔
+    reconnectTimeout: 3000,             // 单次连接超时
+    maxConcurrentReconnects: 10,        // 防止重连风暴
+    // 扫描配置
+    scanConcurrency: 200,               // 降低并发避免阻塞
+    scanPorts: [9999],
+    scanTimeout: 3000,
+    // 文件上传限制
+    uploadSizeLimit: '10mb',
+    // 日志保留
+    logDir: './logs',
+};
+
+//初始化日志系统
+if (!fs.existsSync(CONFIG.logDir)) {
+    fs.mkdirSync(CONFIG.logDir, { recursive: true });
+}
+
+const logger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: winston.format.combine(
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        winston.format.errors({ stack: true }),
+        winston.format.splat(),
+        winston.format.json()
+    ),
+    defaultMeta: { service: 'log-manager' },
+    transports: [
+        new winston.transports.File({ filename: path.join(CONFIG.logDir, 'error.log'), level: 'error' }),
+        new winston.transports.File({ filename: path.join(CONFIG.logDir, 'combined.log') }),
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.printf(({ timestamp, level, message, ...meta }) => {
+                    return `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`;
+                })
+            )
+        })
+    ],
+});
+
+const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+//初始化 Express
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -20,14 +99,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Alist 客户端配置
-const ALIST_CONFIG = {
-    url: process.env.ALIST_URL || 'http://10.88.202.73:5244',
-    basePath: process.env.ALIST_BASE_PATH || '/学生目录/log',
-    username: process.env.ALIST_USERNAME || 'admin',
-    password: process.env.ALIST_PASSWORD || 'adm1n5'
-};
-
+//Alist 客户端（优化 token 刷新和错误重试）
 class AlistClient {
     constructor(config) {
         this.baseUrl = config.url.replace(/\/$/, '');
@@ -36,6 +108,8 @@ class AlistClient {
         this.password = config.password;
         this.token = null;
         this.tokenExpire = 0;
+        this.tokenRefreshMargin = config.tokenRefreshMargin;
+        this.logger = logger.child({ module: 'AlistClient' });
     }
 
     async _request(method, endpoint, data = null, options = {}, retry = true) {
@@ -51,30 +125,39 @@ class AlistClient {
                 url,
                 data,
                 headers,
+                timeout: 30000,
                 ...options
             });
             return response.data;
         } catch (error) {
             if (retry && error.response && error.response.status === 401) {
+                this.logger.warn('Token 失效，重新登录');
                 await this._login();
                 headers.Authorization = this.token;
                 const retryResponse = await axios({ method, url, data, headers, ...options });
                 return retryResponse.data;
             }
+            this.logger.error(`Alist 请求失败: ${method} ${endpoint}`, { error: error.message });
             throw error;
         }
     }
 
     async _login() {
-        const response = await axios.post(`${this.baseUrl}/api/auth/login`, {
-            username: this.username,
-            password: this.password
-        });
-        if (response.data.code === 200) {
-            this.token = response.data.data.token;
-            this.tokenExpire = Date.now() + 23 * 60 * 60 * 1000;
-        } else {
-            throw new Error('Alist 登录失败: ' + response.data.message);
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/auth/login`, {
+                username: this.username,
+                password: this.password
+            });
+            if (response.data.code === 200) {
+                this.token = response.data.data.token;
+                this.tokenExpire = Date.now() + 23 * 60 * 60 * 1000 - this.tokenRefreshMargin;
+                this.logger.info('Alist 登录成功');
+            } else {
+                throw new Error('Alist 登录失败: ' + response.data.message);
+            }
+        } catch (error) {
+            this.logger.error('Alist 登录异常', { error: error.message });
+            throw error;
         }
     }
 
@@ -84,17 +167,26 @@ class AlistClient {
         }
     }
 
-    _getFullPath(relativePath) {
-        return relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+    // 路径安全校验：防止路径遍历攻击
+    _sanitizePath(inputPath) {
+        // 移除可能的 ../
+        const normalized = path.posix.normalize(inputPath).replace(/^(\.\.[\/\\])+/, '');
+        // 确保路径以 basePath 开头
+        const full = path.posix.join(this.basePath, normalized);
+        if (!full.startsWith(this.basePath)) {
+            throw new Error('非法路径访问');
+        }
+        return full;
     }
 
     async ensureDir(dirPath) {
-        const fullPath = this._getFullPath(dirPath);
+        const fullPath = this._sanitizePath(dirPath);
         try {
             await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
         } catch (err) {
             if (err.response && err.response.status === 404) {
                 await this._request('POST', '/api/fs/mkdir', { path: fullPath });
+                this.logger.info(`创建目录: ${fullPath}`);
             } else {
                 throw err;
             }
@@ -102,7 +194,7 @@ class AlistClient {
     }
 
     async listFiles(dirPath) {
-        const fullPath = this._getFullPath(dirPath);
+        const fullPath = this._sanitizePath(dirPath);
         try {
             const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
             if (result.code === 200) {
@@ -130,7 +222,7 @@ class AlistClient {
     }
 
     async readFile(filePath) {
-        const fullPath = this._getFullPath(filePath);
+        const fullPath = this._sanitizePath(filePath);
         const result = await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`);
 
         if (result.code === 200 && result.data) {
@@ -149,15 +241,14 @@ class AlistClient {
 
             const detected = jschardet.detect(buffer);
             const encoding = detected.encoding || 'utf-8';
-            console.log(`[readFile] 检测到编码: ${encoding}, 置信度: ${detected.confidence}`);
-
+            this.logger.debug(`文件编码检测: ${filePath} -> ${encoding} (置信度: ${detected.confidence})`);
             return iconv.decode(buffer, encoding);
         }
         throw new Error('文件内容获取失败或文件不存在');
     }
 
     async downloadFile(filePath, res) {
-        const fullPath = this._getFullPath(filePath);
+        const fullPath = this._sanitizePath(filePath);
         await this._ensureToken();
         const url = `${this.baseUrl}/api/fs/get?path=${encodeURIComponent(fullPath)}`;
         const response = await axios({
@@ -170,7 +261,7 @@ class AlistClient {
     }
 
     async uploadFile(dirPath, filename, content) {
-        const fullDir = this._getFullPath(dirPath);
+        const fullDir = this._sanitizePath(dirPath);
         const fullPath = `${fullDir}/${filename}`;
         await this.ensureDir(dirPath);
         await this._request('PUT', `/api/fs/put?path=${encodeURIComponent(fullPath)}`, content, {
@@ -179,32 +270,49 @@ class AlistClient {
                 'Content-Length': Buffer.byteLength(content)
             }
         });
+        this.logger.info(`文件上传成功: ${fullPath}`);
         return { success: true, filename };
     }
 }
 
-const alistClient = new AlistClient(ALIST_CONFIG);
+const alistClient = new AlistClient(CONFIG.alist);
 
-// MySQL 连接池
-const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'log_manager',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'client_logs',
-    charset: 'utf8mb4',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-};
+//MySQL 数据库
+const pool = mysql.createPool({
+    ...CONFIG.db,
+    // 启用 keepAlive
+    enableKeepAlive: CONFIG.db.enableKeepAlive,
+    keepAliveInitialDelay: CONFIG.db.keepAliveInitialDelay,
+});
 
-const pool = mysql.createPool(dbConfig);
+// 执行查询并自动重试
+async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
+    let lastError;
+    for (let i = 0; i < retries; i++) {
+        let connection;
+        try {
+            connection = await pool.getConnection();
+            const [result] = await connection.execute(sql, params);
+            return result;
+        } catch (error) {
+            lastError = error;
+            logger.warn(`数据库查询失败 (尝试 ${i + 1}/${retries}): ${error.message}`);
+            // 如果是连接丢失错误，等待后重试
+            if (error.code === 'PROTOCOL_CONNECTION_LOST' || error.code === 'ECONNREFUSED' || error.fatal) {
+                await new Promise(resolve => setTimeout(resolve, CONFIG.db.retryDelay));
+                continue;
+            }
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
+    }
+    throw lastError;
+}
 
 async function initDatabase() {
-    let connection;
     try {
-        connection = await pool.getConnection();
-        await connection.execute(`
+        await executeWithRetry(`
             CREATE TABLE IF NOT EXISTS known_clients (
                 id VARCHAR(45) PRIMARY KEY COMMENT '客户端标识 ip:port',
                 ip VARCHAR(45) NOT NULL,
@@ -213,20 +321,16 @@ async function initDatabase() {
                 created_at BIGINT COMMENT '创建时间戳（毫秒）'
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
-        console.log('MySQL 数据库表初始化完成');
+        logger.info('MySQL 数据库表初始化完成');
     } catch (error) {
-        console.error('数据库初始化失败:', error);
+        logger.error('数据库初始化失败，退出进程', { error: error.message });
         process.exit(1);
-    } finally {
-        if (connection) connection.release();
     }
 }
 
 async function loadKnownClientsFromDB() {
-    let connection;
     try {
-        connection = await pool.getConnection();
-        const [rows] = await connection.execute('SELECT id, ip, port, last_seen FROM known_clients');
+        const rows = await executeWithRetry('SELECT id, ip, port, last_seen FROM known_clients');
         const clientsMap = new Map();
         rows.forEach(row => {
             clientsMap.set(row.id, {
@@ -235,78 +339,52 @@ async function loadKnownClientsFromDB() {
                 lastSeen: row.last_seen ? new Date(row.last_seen) : null
             });
         });
+        logger.info(`从数据库加载了 ${clientsMap.size} 个已知客户端`);
         return clientsMap;
     } catch (error) {
-        console.error('加载已知客户端失败:', error);
+        logger.error('加载已知客户端失败', { error: error.message });
         return new Map();
-    } finally {
-        if (connection) connection.release();
     }
 }
 
 async function saveKnownClientToDB(clientId, ip, port) {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        const now = Date.now();
-        await connection.execute(
-            `INSERT INTO known_clients (id, ip, port, last_seen, created_at) 
-             VALUES (?, ?, ?, ?, ?) 
-             ON DUPLICATE KEY UPDATE 
-                 ip = VALUES(ip), 
-                 port = VALUES(port), 
-                 last_seen = VALUES(last_seen)`,
-            [clientId, ip, port, now, now]
-        );
-    } catch (error) {
-        console.error('保存客户端到数据库失败:', error);
-    } finally {
-        if (connection) connection.release();
-    }
+    const now = Date.now();
+    await executeWithRetry(
+        `INSERT INTO known_clients (id, ip, port, last_seen, created_at) 
+         VALUES (?, ?, ?, ?, ?) 
+         ON DUPLICATE KEY UPDATE 
+             ip = VALUES(ip), 
+             port = VALUES(port), 
+             last_seen = VALUES(last_seen)`,
+        [clientId, ip, port, now, now]
+    );
 }
 
 async function updateLastSeen(clientId) {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        const now = Date.now();
-        await connection.execute(
-            'UPDATE known_clients SET last_seen = ? WHERE id = ?',
-            [now, clientId]
-        );
-    } catch (error) {
-        console.error('更新最后在线时间失败:', error);
-    } finally {
-        if (connection) connection.release();
-    }
+    const now = Date.now();
+    await executeWithRetry(
+        'UPDATE known_clients SET last_seen = ? WHERE id = ?',
+        [now, clientId]
+    );
 }
 
-// 新增：从数据库删除指定客户端
 async function deleteKnownClientFromDB(clientId) {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        await connection.execute('DELETE FROM known_clients WHERE id = ?', [clientId]);
-        console.log(`数据库记录已删除: ${clientId}`);
-    } catch (error) {
-        console.error('删除数据库记录失败:', error);
-        throw error;
-    } finally {
-        if (connection) connection.release();
-    }
+    await executeWithRetry('DELETE FROM known_clients WHERE id = ?', [clientId]);
+    logger.info(`数据库记录已删除: ${clientId}`);
 }
 
-// ClientManager
-const TCP_LISTEN_PORT = parseInt(process.env.TCP_PORT) || 9999;
-
+//ClientManager
 class ClientManager {
     constructor() {
         this.clients = new Map();               // 在线客户端
-        this.knownClients = new Map();          // 已知客户端详细信息 (id -> {ip, port, lastSeen})
+        this.knownClients = new Map();          // 已知客户端详细信息
         this.webClients = new Set();
-        this.heartbeatInterval = 30000;
-        this.reconnectInterval = 60000;         // 离线重连间隔：1分钟
         this.tcpServer = null;
+        this.heartbeatTimer = null;
+        this.reconnectTimer = null;
+        this.reconnectQueue = new Set();        // 防止并发重连同一个客户端
+        this.reconnectLimit = pLimit(CONFIG.maxConcurrentReconnects);
+        this.logger = logger.child({ module: 'ClientManager' });
 
         this.init();
     }
@@ -314,15 +392,10 @@ class ClientManager {
     async init() {
         await initDatabase();
         this.knownClients = await loadKnownClientsFromDB();
-        console.log(`从数据库加载了 ${this.knownClients.size} 个已知客户端`);
 
         this.startTcpServer();
         this.startHeartbeat();
-
-        // ★ 启动后逐个连接已知客户端
         await this.connectAllKnownClients();
-
-        // ★ 启动定时重连离线客户端
         this.startReconnectTimer();
     }
 
@@ -332,7 +405,7 @@ class ClientManager {
             const remotePort = socket.remotePort;
             const clientId = `${remoteAddress}:${remotePort}`;
 
-            console.log(`客户端主动连接: ${clientId}`);
+            this.logger.info(`客户端主动连接: ${clientId}`);
 
             const client = {
                 id: clientId,
@@ -359,18 +432,18 @@ class ClientManager {
                 port: remotePort,
                 lastSeen: new Date()
             });
-            saveKnownClientToDB(clientId, remoteAddress, remotePort).catch(e => console.error(e));
+            saveKnownClientToDB(clientId, remoteAddress, remotePort).catch(e => this.logger.error(e));
 
             this.setupSocketListeners(client);
-            this.broadcastToWeb({ type: 'client_connected', client: this.getClientInfo(client) });
+            this.broadcastClientUpdate(client, 'connected');
         });
 
         this.tcpServer.on('error', (err) => {
-            console.error('TCP 服务器错误:', err);
+            this.logger.error('TCP 服务器错误', { error: err.message });
         });
 
-        this.tcpServer.listen(TCP_LISTEN_PORT, () => {
-            console.log(`TCP 被动监听端口 ${TCP_LISTEN_PORT}，等待客户端连接...`);
+        this.tcpServer.listen(CONFIG.tcpPort, () => {
+            this.logger.info(`TCP 被动监听端口 ${CONFIG.tcpPort}`);
         });
     }
 
@@ -383,42 +456,39 @@ class ClientManager {
                         const response = JSON.parse(msg);
                         this.handleResponse(client, response);
                     } catch (e) {
-                        console.error('解析客户端消息失败:', msg);
+                        this.logger.error(`解析客户端消息失败: ${msg}`);
                     }
                 });
             } catch (e) {
-                console.error('处理客户端数据失败:', e);
+                this.logger.error('处理客户端数据失败', { error: e.message });
             }
         });
 
         client.socket.on('close', () => {
-            console.log(`客户端 ${client.id} 连接断开`);
-            client.status = 'offline';
-            const now = new Date();
-            client.lastSeen = now;
-            if (this.knownClients.has(client.id)) {
-                this.knownClients.get(client.id).lastSeen = now;
-            }
-            updateLastSeen(client.id).catch(e => console.error(e));
-            this.broadcastToWeb({ type: 'client_offline', clientId: client.id });
+            this.logger.info(`客户端 ${client.id} 连接断开`);
+            this.markClientOffline(client);
         });
 
         client.socket.on('error', (err) => {
-            console.error(`客户端 ${client.id} 错误:`, err.message);
-            client.status = 'offline';
-            const now = new Date();
-            client.lastSeen = now;
-            if (this.knownClients.has(client.id)) {
-                this.knownClients.get(client.id).lastSeen = now;
-            }
-            updateLastSeen(client.id).catch(e => console.error(e));
-            this.broadcastToWeb({ type: 'client_offline', clientId: client.id });
+            this.logger.error(`客户端 ${client.id} 错误: ${err.message}`);
+            this.markClientOffline(client);
         });
+    }
+
+    markClientOffline(client) {
+        client.status = 'offline';
+        const now = new Date();
+        client.lastSeen = now;
+        if (this.knownClients.has(client.id)) {
+            this.knownClients.get(client.id).lastSeen = now;
+        }
+        updateLastSeen(client.id).catch(e => this.logger.error(e));
+        this.broadcastClientUpdate(client, 'offline');
     }
 
     handleResponse(client, response) {
         client.lastSeen = new Date();
-        updateLastSeen(client.id).catch(e => console.error(e));
+        updateLastSeen(client.id).catch(e => this.logger.error(e));
 
         if (response.status === 'ok' && response.data) {
             if (response.data.recording !== undefined) {
@@ -466,95 +536,102 @@ class ClientManager {
     }
 
     startHeartbeat() {
-        setInterval(() => {
+        this.heartbeatTimer = setInterval(() => {
             this.clients.forEach(async (client, clientId) => {
                 if (client.status === 'online') {
                     try {
                         const result = await this.sendCommand(clientId, { action: 'ping' });
                         if (!result.success) {
-                            console.log(`心跳失败: ${clientId}`);
-                            client.status = 'offline';
-                            const now = new Date();
-                            client.lastSeen = now;
-                            if (this.knownClients.has(clientId)) {
-                                this.knownClients.get(clientId).lastSeen = now;
-                            }
-                            updateLastSeen(clientId).catch(e => console.error(e));
-                            this.broadcastToWeb({ type: 'client_offline', clientId });
+                            this.logger.warn(`心跳失败: ${clientId}`);
+                            this.markClientOffline(client);
+                            // 立即尝试重连一次
+                            this.reconnectSingleClient(clientId).catch(e => this.logger.error(e));
                         }
                     } catch (e) {
-                        console.log(`心跳异常: ${clientId}`, e.message);
-                        client.status = 'offline';
-                        const now = new Date();
-                        client.lastSeen = now;
-                        if (this.knownClients.has(clientId)) {
-                            this.knownClients.get(clientId).lastSeen = now;
-                        }
-                        updateLastSeen(clientId).catch(e => console.error(e));
-                        this.broadcastToWeb({ type: 'client_offline', clientId });
+                        this.logger.warn(`心跳异常: ${clientId}`, { error: e.message });
+                        this.markClientOffline(client);
+                        this.reconnectSingleClient(clientId).catch(e => this.logger.error(e));
                     }
                 }
             });
-        }, this.heartbeatInterval);
+        }, CONFIG.heartbeatInterval);
     }
 
-    // ★ 新增：逐个连接所有已知客户端
     async connectAllKnownClients() {
-        console.log('开始逐个连接已知客户端...');
+        this.logger.info('开始逐个连接已知客户端...');
         const entries = Array.from(this.knownClients.entries());
         for (const [clientId, info] of entries) {
             if (this.clients.has(clientId) && this.clients.get(clientId).status === 'online') {
                 continue;
             }
-            console.log(`尝试连接已知客户端: ${clientId}`);
-            await this.tryConnect(info.ip, info.port);
-            await new Promise(resolve => setTimeout(resolve, 100)); // 避免并发过高
+            await this.reconnectSingleClient(clientId);
         }
-        console.log('已知客户端连接尝试完成');
+        this.logger.info('已知客户端连接尝试完成');
     }
 
-    // ★ 新增：启动定时重连离线客户端
     startReconnectTimer() {
-        setInterval(() => {
+        this.reconnectTimer = setInterval(() => {
             this.reconnectOfflineClients();
-        }, this.reconnectInterval);
+        }, CONFIG.reconnectInterval);
     }
 
-    // ★ 新增：重连所有离线客户端
     async reconnectOfflineClients() {
-        console.log('检查离线客户端并尝试重连...');
+        this.logger.info('定时检查离线客户端...');
+        const offlineList = [];
         for (const [clientId, info] of this.knownClients.entries()) {
             const client = this.clients.get(clientId);
             if (!client || client.status === 'offline') {
-                console.log(`尝试重连离线客户端: ${clientId}`);
-                await this.tryConnect(info.ip, info.port);
-                await new Promise(resolve => setTimeout(resolve, 100));
+                offlineList.push(clientId);
             }
+        }
+        // 使用并发限制进行重连
+        const tasks = offlineList.map(clientId => this.reconnectLimit(() => this.reconnectSingleClient(clientId)));
+        await Promise.allSettled(tasks);
+    }
+
+    async reconnectSingleClient(clientId) {
+        // 防止并发重连同一客户端
+        if (this.reconnectQueue.has(clientId)) {
+            return;
+        }
+        this.reconnectQueue.add(clientId);
+        try {
+            const info = this.knownClients.get(clientId);
+            if (!info) {
+                this.logger.warn(`尝试重连未知客户端: ${clientId}`);
+                return;
+            }
+            this.logger.info(`尝试重连: ${clientId}`);
+            const clientInfo = await this.tryConnect(info.ip, info.port);
+            if (clientInfo) {
+                this.logger.info(`重连成功: ${clientId}`);
+            } else {
+                this.logger.debug(`重连失败: ${clientId}`);
+            }
+        } catch (e) {
+            this.logger.error(`重连异常: ${clientId}`, { error: e.message });
+        } finally {
+            this.reconnectQueue.delete(clientId);
         }
     }
 
-    // ★ 新增：删除已知客户端（内存 + 数据库 + 断开连接）
     async deleteKnownClient(clientId) {
-        // 1. 如果在线，断开连接
+        // 1. 断开连接
         const client = this.clients.get(clientId);
         if (client) {
             client.socket.destroy();
             this.clients.delete(clientId);
         }
-
-        // 2. 从 knownClients 中删除
+        // 2. 从内存删除
         this.knownClients.delete(clientId);
-
         // 3. 从数据库删除
         await deleteKnownClientFromDB(clientId);
-
-        // 4. 通知所有 Web 客户端
+        // 4. 通知前端
         this.broadcastToWeb({
             type: 'client_deleted',
             clientId: clientId
         });
-
-        console.log(`客户端 ${clientId} 已被完全删除`);
+        this.logger.info(`客户端 ${clientId} 已被完全删除`);
     }
 
     getClientInfo(client) {
@@ -592,6 +669,7 @@ class ClientManager {
 
     addWebClient(ws) {
         this.webClients.add(ws);
+        // 首次连接发送全量列表
         ws.send(JSON.stringify({
             type: 'clients_list',
             clients: this.getAllClients()
@@ -600,6 +678,20 @@ class ClientManager {
 
     removeWebClient(ws) {
         this.webClients.delete(ws);
+    }
+
+    // 广播增量更新（优先使用 client_updated 事件）
+    broadcastClientUpdate(client, eventType) {
+        const message = JSON.stringify({
+            type: 'client_updated',
+            event: eventType,
+            client: this.getClientInfo(client)
+        });
+        this.webClients.forEach(ws => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(message);
+            }
+        });
     }
 
     broadcastToWeb(data) {
@@ -611,7 +703,7 @@ class ClientManager {
         });
     }
 
-    async scanNetwork(startIp, endIp, ports = [9999]) {
+    async scanNetwork(startIp, endIp, ports = CONFIG.scanPorts) {
         const startParts = startIp.split('.').map(Number);
         const endParts = endIp.split('.').map(Number);
         if (startParts.length !== 4 || endParts.length !== 4) {
@@ -635,63 +727,54 @@ class ClientManager {
         const endInt = ipToInt(endIp);
         const total = endInt - startInt + 1;
 
-        console.log(`开始扫描网络: ${startIp} - ${endIp}, 端口: ${ports.join(',')}`);
+        this.logger.info(`开始扫描网络: ${startIp} - ${endIp}, 端口: ${ports.join(',')}`);
 
         const foundClients = [];
-        const concurrency = 1000;
-        const ipList = [];
-        for (let i = 0; i < total; i++) {
-            ipList.push(intToIp(startInt + i));
-        }
-
-        const scanIp = async (ip) => {
-            for (const port of ports) {
-                const client = await this.tryConnect(ip, port);
-                if (client) {
-                    foundClients.push(client);
-                    break;
-                }
-            }
-        };
+        const limit = pLimit(CONFIG.scanConcurrency);
 
         const tasks = [];
-        for (const ip of ipList) {
-            tasks.push(scanIp(ip));
-            if (tasks.length >= concurrency) {
-                await Promise.allSettled(tasks.splice(0, concurrency));
-            }
+        for (let i = 0; i < total; i++) {
+            const ip = intToIp(startInt + i);
+            tasks.push(limit(() => this.scanIp(ip, ports).then(client => {
+                if (client) foundClients.push(client);
+            })));
         }
         await Promise.allSettled(tasks);
 
-        console.log(`扫描完成，发现 ${foundClients.length} 个客户端`);
+        this.logger.info(`扫描完成，发现 ${foundClients.length} 个客户端`);
         return foundClients;
+    }
+
+    async scanIp(ip, ports) {
+        for (const port of ports) {
+            const client = await this.tryConnect(ip, port);
+            if (client) return client;
+        }
+        return null;
     }
 
     tryConnect(ip, port) {
         return new Promise((resolve) => {
             const cleanIp = ip.split('/')[0];
             const socket = new net.Socket();
-            const timeout = 3000;
             let resolved = false;
 
-            const cleanup = () => {
+            const cleanup = (result) => {
                 if (!resolved) {
                     resolved = true;
                     socket.destroy();
-                    resolve(null);
+                    resolve(result);
                 }
             };
 
-            socket.setTimeout(timeout);
+            socket.setTimeout(CONFIG.reconnectTimeout);
             socket.connect(port, cleanIp, () => {
                 socket.write(JSON.stringify({ action: 'ping' }) + '\n', (err) => {
                     if (err) {
-                        cleanup();
+                        cleanup(null);
                         return;
                     }
-                    const responseTimeout = setTimeout(() => {
-                        cleanup();
-                    }, 2000);
+                    const responseTimeout = setTimeout(() => cleanup(null), 2000);
 
                     socket.once('data', (data) => {
                         clearTimeout(responseTimeout);
@@ -716,36 +799,38 @@ class ClientManager {
                                     };
                                     this.clients.set(clientId, client);
                                     this.knownClients.set(clientId, { ip: cleanIp, port, lastSeen: now });
-                                    saveKnownClientToDB(clientId, cleanIp, port).catch(e => console.error(e));
+                                    saveKnownClientToDB(clientId, cleanIp, port).catch(e => this.logger.error(e));
                                     this.setupSocketListeners(client);
-                                    this.broadcastToWeb({ type: 'client_connected', client: this.getClientInfo(client) });
+                                    this.broadcastClientUpdate(client, 'connected');
                                 } else {
-                                    client.socket.destroy();
+                                    // 替换旧 socket
+                                    const oldSocket = client.socket;
+                                    oldSocket.destroy();
                                     client.socket = socket;
                                     client.status = 'online';
                                     client.lastSeen = now;
                                     if (this.knownClients.has(clientId)) {
                                         this.knownClients.get(clientId).lastSeen = now;
                                     }
-                                    updateLastSeen(clientId).catch(e => console.error(e));
+                                    updateLastSeen(clientId).catch(e => this.logger.error(e));
                                     this.setupSocketListeners(client);
+                                    this.broadcastClientUpdate(client, 'updated');
                                 }
-                                resolved = true;
-                                resolve(this.getClientInfo(client));
+                                cleanup(this.getClientInfo(client));
                             } else {
-                                cleanup();
+                                cleanup(null);
                             }
                         } catch (e) {
-                            cleanup();
+                            cleanup(null);
                         }
                     });
                 });
             });
 
-            socket.on('error', () => cleanup());
-            socket.on('timeout', () => cleanup());
+            socket.on('error', () => cleanup(null));
+            socket.on('timeout', () => cleanup(null));
             socket.on('close', () => {
-                if (!resolved) cleanup();
+                if (!resolved) cleanup(null);
             });
         });
     }
@@ -757,7 +842,7 @@ class ClientManager {
 
 const clientManager = new ClientManager();
 
-// 辅助函数：根据 clientId 获取客户端信息（支持离线）
+//辅助函数：获取客户端信息
 function getClientInfoById(clientId) {
     let client = clientManager.clients.get(clientId);
     if (client) {
@@ -780,9 +865,9 @@ function getClientInfoById(clientId) {
     return { exists: false };
 }
 
-// WebSocket 处理
+//WebSocket 处理
 wss.on('connection', (ws) => {
-    console.log('Web 客户端已连接');
+    logger.info('Web 客户端已连接');
     clientManager.addWebClient(ws);
 
     ws.on('message', async (message) => {
@@ -804,7 +889,7 @@ wss.on('connection', (ws) => {
                         const found = await clientManager.scanNetwork(
                             data.startIp,
                             data.endIp,
-                            data.ports || [9999]
+                            data.ports || CONFIG.scanPorts
                         );
                         ws.send(JSON.stringify({ type: 'scan_complete', found }));
                     } catch (e) {
@@ -830,7 +915,6 @@ wss.on('connection', (ws) => {
                     ws.send(JSON.stringify({ type: 'disconnected', clientId: data.clientId }));
                     break;
 
-                // ★ 新增：删除客户端（含数据库）
                 case 'delete_client':
                     try {
                         await clientManager.deleteKnownClient(data.clientId);
@@ -858,79 +942,56 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        console.log('Web 客户端已断开');
+        logger.info('Web 客户端已断开');
         clientManager.removeWebClient(ws);
     });
 });
 
-// HTTP API
-
+//HTTP API（统一错误处理）
 app.get('/api/clients', (req, res) => {
     res.json(clientManager.getAllClients());
 });
 
-app.get('/api/clients/:clientId/logs', async (req, res) => {
+app.get('/api/clients/:clientId/logs', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
         return res.status(404).json({ error: '客户端不存在' });
     }
-    try {
-        const allFiles = await alistClient.listFiles(clientInfo.logDir);
-        const clientFiles = allFiles.filter(file => file.filename.startsWith(clientInfo.ip + '_'));
-        res.json(clientFiles);
-    } catch (e) {
-        console.error('获取日志列表失败:', e);
-        res.status(500).json({ error: '读取失败', details: e.message });
-    }
-});
+    const allFiles = await alistClient.listFiles(clientInfo.logDir);
+    const clientFiles = allFiles.filter(file => file.filename.startsWith(clientInfo.ip + '_'));
+    res.json(clientFiles);
+}));
 
-app.get('/api/clients/:clientId/logs/:filename', async (req, res) => {
+app.get('/api/clients/:clientId/logs/:filename', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
         return res.status(404).json({ error: '客户端不存在' });
     }
     const filePath = `${clientInfo.logDir}/${req.params.filename}`;
-    try {
-        const content = await alistClient.readFile(filePath);
-        res.json({ content });
-    } catch (e) {
-        console.error('读取文件失败:', e);
-        res.status(500).json({ error: '文件读取失败', details: e.message });
-    }
-});
+    const content = await alistClient.readFile(filePath);
+    res.json({ content });
+}));
 
-app.get('/api/clients/:clientId/logs/:filename/download', async (req, res) => {
+app.get('/api/clients/:clientId/logs/:filename/download', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
         return res.status(404).json({ error: '客户端不存在' });
     }
     const filePath = `${clientInfo.logDir}/${req.params.filename}`;
-    try {
-        await alistClient.downloadFile(filePath, res);
-    } catch (e) {
-        console.error('下载文件失败:', e);
-        if (!res.headersSent) {
-            res.status(404).json({ error: '文件不存在或无法下载' });
-        }
-    }
-});
+    await alistClient.downloadFile(filePath, res);
+}));
 
-app.get('/api/clients/:clientId/logs/:filename/raw', async (req, res) => {
+app.get('/api/clients/:clientId/logs/:filename/raw', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) {
         return res.status(404).send('客户端不存在');
     }
     const filePath = `${clientInfo.logDir}/${req.params.filename}`;
-    try {
-        const content = await alistClient.readFile(filePath);
-        res.type('text/plain').send(content);
-    } catch (e) {
-        console.error('读取文件失败:', e);
-        res.status(500).send('文件读取失败: ' + e.message);
-    }
-});
+    const content = await alistClient.readFile(filePath);
+    res.type('text/plain').send(content);
+}));
 
-app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: '10mb' }), async (req, res) => {
+app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uploadSizeLimit }), asyncHandler(async (req, res) => {
     const ip = req.params.ip;
     const clientId = Array.from(clientManager.clients.keys()).find(id => id.startsWith(ip));
     if (!clientId) {
@@ -938,18 +999,45 @@ app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: '10mb' }), 
     }
     const client = clientManager.clients.get(clientId);
     const filename = `${ip}_${new Date().toISOString().split('T')[0].replace(/-/g, '')}.log`;
-    try {
-        await alistClient.uploadFile(client.logDir, filename, req.body.toString());
-        res.json({ success: true, filename });
-    } catch (e) {
-        console.error('上传到 Alist 失败:', e);
-        res.status(500).json({ error: '保存失败', details: e.message });
-    }
+    const result = await alistClient.uploadFile(client.logDir, filename, req.body.toString());
+    res.json(result);
+}));
+
+// 统一错误处理中间件
+app.use((err, req, res, next) => {
+    logger.error('API 错误', { url: req.url, error: err.message, stack: err.stack });
+    res.status(err.status || 500).json({
+        error: err.message || '服务器内部错误',
+        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    });
 });
 
-// 启动服务
-const PORT = parseInt(process.env.PORT) || 3232;
-server.listen(PORT, () => {
-    console.log(`HTTP 服务运行在端口 ${PORT}`);
-    console.log(`访问 http://localhost:${PORT} 打开管理界面`);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+async function shutdown() {
+    logger.info('开始关机...');
+    clearInterval(clientManager.heartbeatTimer);
+    clearInterval(clientManager.reconnectTimer);
+
+    // 关闭 TCP 服务器
+    if (clientManager.tcpServer) {
+        clientManager.tcpServer.close();
+    }
+    // 关闭 WebSocket 连接
+    wss.clients.forEach(ws => ws.terminate());
+    // 关闭 HTTP 服务器
+    server.close(async () => {
+        logger.info('HTTP 服务器已关闭');
+        // 关闭数据库连接池
+        await pool.end();
+        logger.info('数据库连接池已关闭');
+        process.exit(0);
+    });
+}
+
+//启动服务
+server.listen(CONFIG.httpPort, () => {
+    logger.info(`HTTP 服务运行在端口 ${CONFIG.httpPort}`);
+    logger.info(`访问 http://localhost:${CONFIG.httpPort} 打开管理界面`);
 });
