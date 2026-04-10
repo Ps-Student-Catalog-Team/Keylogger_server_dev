@@ -9,7 +9,7 @@ const axios = require('axios');
 const mysql = require('mysql2/promise');
 const jschardet = require('jschardet');
 const iconv = require('iconv-lite');
-const pLimit = require('p-limit');
+const pLimit = require('p-limit').default || require('p-limit');
 const winston = require('winston');
 const open = require('open');
 require('dotenv').config();
@@ -161,6 +161,7 @@ class AlistClient {
             throw error;
         }
     }
+    
 
     async _ensureToken() {
         if (!this.token || Date.now() >= this.tokenExpire) {
@@ -279,12 +280,20 @@ class AlistClient {
 const alistClient = new AlistClient(CONFIG.alist);
 
 //MySQL 数据库
-const pool = mysql.createPool({
-    ...CONFIG.db,
-    // 启用 keepAlive
+const dbPoolConfig = {
+    host: CONFIG.db.host,
+    port: CONFIG.db.port,
+    user: CONFIG.db.user,
+    password: CONFIG.db.password,
+    database: CONFIG.db.database,
+    charset: CONFIG.db.charset,
+    connectionLimit: CONFIG.db.connectionLimit,
+    queueLimit: CONFIG.db.queueLimit,
     enableKeepAlive: CONFIG.db.enableKeepAlive,
     keepAliveInitialDelay: CONFIG.db.keepAliveInitialDelay,
-});
+};
+
+const pool = mysql.createPool(dbPoolConfig);
 
 // 执行查询并自动重试
 async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
