@@ -1149,7 +1149,7 @@ async function shutdown() {
 // 启动服务
 server.listen(CONFIG.httpPort, async () => {
     logger.info(`HTTP 服务运行在端口 ${CONFIG.httpPort}`);
-    const url = `http://localhost:${CONFIG.httpPort}`;
+    const url = `http://localhost:${CONFIG.httpPort}/login.html`;
     logger.info(`访问 ${url} 打开管理界面`);
 
     if (process.env.NODE_ENV !== 'production') {

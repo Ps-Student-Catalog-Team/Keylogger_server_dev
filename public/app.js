@@ -5,7 +5,10 @@ let currentClientId = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
 let toastTimer = null;
-const WS_URL = `ws://${window.location.host}`;
+let isUnloading = false;
+let isReconnecting = false;
+let reconnectAttempts = 0;
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 let autoRefreshTimer = null;
 const AUTO_REFRESH_INTERVAL = 1000; // 1秒
 const MAX_RECONNECT_DELAY = 30000;
@@ -50,24 +53,47 @@ document.querySelectorAll('.nav-item').forEach(item => {
 
 // 初始化 WebSocket
 function connectWebSocket() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
 
     ws = new WebSocket(WS_URL);
     ws.onopen = () => {
         dom.wsStatus.classList.add('connected');
         dom.wsStatusText.textContent = '已连接';
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        }
+        console.info('WebSocket 已连接:', WS_URL);
+        const wasReconnect = reconnectAttempts > 0;
+        reconnectAttempts = 0;
+        isReconnecting = false;
         reconnectDelay = 1000;
-        showToast('已连接到服务器', 'success');
+        showToast(wasReconnect ? '已重新连接到服务器' : '已连接到服务器', 'success');
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
         dom.wsStatus.classList.remove('connected');
         dom.wsStatusText.textContent = '断开，尝试重连...';
-        reconnectTimer = setTimeout(connectWebSocket, reconnectDelay);
+        ws = null;
+        console.warn('WebSocket 关闭:', event.code, event.reason);
+
+        if (isUnloading) return;
+
+        if (event && event.code === 1008) {
+            dom.wsStatusText.textContent = '未授权，连接已关闭';
+            showToast('WebSocket 未授权，请重新登录', 'error');
+            return;
+        }
+
+        if (!isReconnecting) {
+            showToast('与服务器断开，正在重连...', 'error');
+        }
+        isReconnecting = true;
+        reconnectTimer = setTimeout(() => {
+            reconnectAttempts += 1;
+            connectWebSocket();
+        }, reconnectDelay);
         reconnectDelay = Math.min(MAX_RECONNECT_DELAY, reconnectDelay * 1.5);
     };
 
@@ -546,7 +572,15 @@ function stopAutoRefresh() {
 
 // 页面关闭前清理定时器
 window.addEventListener('beforeunload', () => {
+    isUnloading = true;
     stopAutoRefresh();
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
 });
 
 // 初始化连接
