@@ -564,6 +564,10 @@ class ClientManager {
             if (client.socket === currentSocket) {
                 this.logger.error(`客户端 ${client.id} 错误: ${err.message}`);
                 this.markClientOffline(client);
+                // 立即尝试重连（使用 reconnectLimit 控制并发）
+                this.reconnectSingleClient(client.id).catch(e =>
+                    this.logger.debug(`客户端 ${client.id} 立即重连失败: ${e.message}`)
+                );
             }
         });
     }
