@@ -1235,9 +1235,6 @@ async function shutdown() {
             logger.info(`HTTP 服务运行在端口 ${CONFIG.httpPort}`);
             const url = `http://localhost:${CONFIG.httpPort}/login.html`;
             logger.info(`访问 ${url} 打开管理界面`);
-            if (process.env.NODE_ENV !== 'test') {
-                open(url).catch(err => logger.warn('自动打开浏览器失败', { error: err.message }));
-            }
         });
     } catch (err) {
         logger.error('服务启动失败', { error: err.message, stack: err.stack });
