@@ -70,12 +70,16 @@ function connectWebSocket() {
         reconnectAttempts = 0;
         isReconnecting = false;
         reconnectDelay = 1000;
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
         showToast(wasReconnect ? '已重新连接到服务器' : '已连接到服务器', 'success');
     };
 
     ws.onclose = (event) => {
         dom.wsStatus.classList.remove('connected');
-        dom.wsStatusText.textContent = '断开，尝试重连...';
+        dom.wsStatusText.textContent = '已断开';
         ws = null;
         console.warn('WebSocket 关闭:', event.code, event.reason);
 
@@ -122,10 +126,16 @@ function handleWebSocketMessage(data) {
             break;
         case 'client_connected':
         case 'client_offline':
-        case 'client_deleted':
+        case 'client_updated':
             if (data.client) {
                 updateClientInList(data.client);
             } else if (data.clientId) {
+                removeClientFromList(data.clientId);
+            }
+            populateClientSelect();
+            break;
+        case 'client_deleted':
+            if (data.clientId) {
                 removeClientFromList(data.clientId);
             }
             populateClientSelect();
@@ -177,7 +187,18 @@ function handleWebSocketMessage(data) {
             }
             break;
         case 'connect_error':
+            if (data.clientId) {
+                connectingClients.delete(data.clientId);
+                renderClientsTable();
+            }
             showToast('连接失败: ' + data.message, 'error');
+            break;
+        case 'disconnect_result':
+            if (data.success) {
+                showToast('客户端已断开', 'success');
+            } else {
+                showToast('断开失败: ' + (data.message || '未知错误'), 'error');
+            }
             break;
         case 'delete_result':
             if (data.success) {
@@ -185,6 +206,9 @@ function handleWebSocketMessage(data) {
             } else {
                 showToast('删除失败: ' + data.error, 'error');
             }
+            break;
+        case 'error':
+            showToast('服务器错误: ' + data.message, 'error');
             break;
         default:
             console.log('未知消息类型:', data);
