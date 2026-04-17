@@ -821,6 +821,25 @@
             color: var(--primary);
         }
 
+        /* 密码高亮和闪烁效果 */
+        .password-highlight {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-weight: bold;
+            border: 1px solid #ffeeba;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .password-highlight.blink {
+            animation: blink 1s ease-in-out 2;
+        }
+
         .tabs {
             display: flex;
             border-bottom: 1px solid var(--gray-light);

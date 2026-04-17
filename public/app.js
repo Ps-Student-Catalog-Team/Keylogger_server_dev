@@ -614,6 +614,38 @@ async function viewLog(clientId, filename) {
     }
 }
 
+// 查看日志内容并滚动到包含密码的行
+async function viewLogWithPassword(clientId, filename, password) {
+    try {
+        const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
+        const content = await response.text();
+        document.getElementById('logModalTitle').textContent = filename;
+        
+        // 创建包含密码高亮的HTML内容
+        const highlightedContent = content.replace(new RegExp(password, 'g'), `<span class="password-highlight">${password}</span>`);
+        
+        // 使用innerHTML而不是textContent来支持HTML
+        document.getElementById('logContent').innerHTML = highlightedContent;
+        document.getElementById('logModal').classList.add('show');
+        
+        // 滚动到第一个高亮的密码位置
+        setTimeout(() => {
+            const highlight = document.querySelector('.password-highlight');
+            if (highlight) {
+                highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 添加闪烁效果以吸引注意
+                highlight.classList.add('blink');
+                setTimeout(() => {
+                    highlight.classList.remove('blink');
+                }, 2000);
+            }
+        }, 100);
+    } catch (e) {
+        console.error('查看日志失败:', e);
+        showToast('查看失败', 'error');
+    }
+}
+
 // 下载日志
 function downloadLog(clientId, filename) {
     window.open(`/api/clients/${clientId}/logs/${filename}/download`, '_blank');
@@ -830,11 +862,27 @@ function displayExtractedPasswords(passwords) {
     // 生成密码列表
     let html = '';
     passwords.forEach(item => {
+        // 提取客户端ID和文件名
+        let clientId = '';
+        let filename = item.file;
+        
+        // 尝试从文件名中提取客户端ID
+        const ipMatch = item.file.match(/^(\d+\.\d+\.\d+\.\d+)_/);
+        if (ipMatch) {
+            const ip = ipMatch[1];
+            const client = clients.find(c => c.ip === ip);
+            clientId = client ? client.id : `${ip}:9999`;
+        }
+        
         html += `
             <div class="extract-item">
                 <div class="index">${item.index}</div>
                 <div class="password-content">${escapeHtml(item.password)}</div>
-                <div class="source-file">${escapeHtml(item.file)}</div>
+                <div class="source-file">
+                    <a href="javascript:void(0)" onclick="viewLogWithPassword('${escapeHtml(clientId)}', '${escapeHtml(filename)}', '${escapeHtml(item.password)}')" style="color: var(--primary); text-decoration: underline; cursor: pointer;">
+                        ${escapeHtml(item.file)}
+                    </a>
+                </div>
                 <div class="timestamp">${escapeHtml(item.timestamp)}</div>
             </div>
         `;
