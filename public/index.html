@@ -704,16 +704,29 @@
         }
 
         .log-viewer {
-            background: #1e1e1e;
-            color: #d4d4d4;
+            background: var(--white);
+            color: var(--dark);
             padding: 1.5rem;
-            border-radius: 8px;
+            border-radius: 10px;
             font-family: 'Consolas', monospace;
             font-size: 0.85rem;
             max-height: 500px;
             overflow-y: auto;
             white-space: pre-wrap;
-            border: 1px solid #333;
+            border: 1px solid var(--gray-light);
+            box-shadow: var(--shadow);
+            position: relative;
+        }
+
+        .log-viewer::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--success));
+            border-radius: 10px 10px 0 0;
         }
 
         .log-viewer::-webkit-scrollbar {
@@ -721,17 +734,18 @@
         }
 
         .log-viewer::-webkit-scrollbar-track {
-            background: #2d2d2d;
+            background: var(--light);
             border-radius: 4px;
         }
 
         .log-viewer::-webkit-scrollbar-thumb {
-            background: #555;
+            background: var(--gray-light);
             border-radius: 4px;
+            transition: all 0.2s ease;
         }
 
         .log-viewer::-webkit-scrollbar-thumb:hover {
-            background: #777;
+            background: var(--primary);
         }
 
         .tabs {

