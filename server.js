@@ -169,10 +169,6 @@ app.get('/logout', (req, res) => {
 app.use(authMiddleware);
 app.use(express.static('public'));
 
-// 提供logs目录的静态文件访问
-const logsDir = path.join(__dirname, 'logs');
-app.use('/logs', express.static(logsDir));
-
 // Alist 客户端
 class AlistClient {
     constructor(config) {
@@ -1233,27 +1229,14 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
             return res.json({ success: true, count: 0 });
         }
         
-        // 使用绝对路径确保文件路径正确
-        const logsDir = path.join(__dirname, 'logs');
-        
         // 保存提取结果到本地文件
         const resultFilename = 'extracted_passwords.txt';
         const resultContent = uniquePasswords.map((item, index) => {
-            const hasRawPassword = item.rawPassword && item.rawPassword !== item.password;
-            let content = `${index + 1}. 来自: ${item.file}\n时间: ${item.timestamp}\n内容: ${item.password}\n`;
-            if (hasRawPassword) {
-                content += `原始: ${item.rawPassword}\n`;
-            }
-            return content;
+            return `${index + 1}. 来自: ${item.file}\n时间: ${item.timestamp}\n内容: ${item.password}\n原始数据: ${item.rawPassword}\n`;
         }).join('\n');
         
-        // 也保存为JSON格式，方便前端解析
-        const jsonFilename = 'extracted_passwords.json';
-        const jsonContent = JSON.stringify(uniquePasswords, null, 2);
-        const jsonFilePath = path.join(logsDir, jsonFilename);
-        fs.writeFileSync(jsonFilePath, jsonContent);
-        logger.info(`成功保存提取结果(JSON)到: ${jsonFilePath}, 大小: ${jsonContent.length} 字节`);
-        
+        // 使用绝对路径确保文件路径正确
+        const logsDir = path.join(__dirname, 'logs');
         const filePath = path.join(logsDir, resultFilename);
         
         // 确保 logs 目录存在
@@ -1339,6 +1322,10 @@ function parsePassword(password) {
                 result += password[i];
                 i++;
             }
+        } else if (password[i] === '\n') {
+            // 保留换行符
+            result += '\n';
+            i++;
         } else {
             // 普通字符，根据当前大小写状态处理
             let char = password[i];

