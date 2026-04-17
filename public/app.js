@@ -179,13 +179,6 @@ function handleWebSocketMessage(data) {
         case 'connect_error':
             showToast('连接失败: ' + data.message, 'error');
             break;
-            case 'clients_list':
-        clients = data.clients;
-            // 当收到新的客户端列表时，清除所有连接中标记
-            connectingClients.clear();
-            renderClientsTable();
-            populateClientSelect();
-            break;
         case 'delete_result':
             if (data.success) {
                 showToast('客户端已删除', 'success');
@@ -415,11 +408,15 @@ function manualConnect() {
 }
 
 // 连接单个客户端（供按钮调用）
-function connectClient(ip, port) {
+function connectClient(ip, port, clientId) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         showToast('WebSocket 未连接', 'error');
         return;
     }
+    // 添加到连接中集合
+    connectingClients.add(clientId);
+    // 重新渲染表格以显示连接中状态
+    renderClientsTable();
     ws.send(JSON.stringify({
         type: 'manual_connect',
         ip,
@@ -437,7 +434,7 @@ function connectAllClients() {
     }
     showToast(`正在尝试连接 ${offlineClients.length} 个离线客户端...`, 'success');
     offlineClients.forEach(client => {
-        connectClient(client.ip, client.port);
+        connectClient(client.ip, client.port, client.id);
     });
 }
 

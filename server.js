@@ -933,9 +933,9 @@ class ClientManager {
     }
 
     manualConnect(ip, port) {
-    // 直接调用 tryConnect，不经过 reconnectSingleClient 的去重逻辑
-    return this.tryConnect(ip, port);
-}
+        // 直接调用 tryConnect，不经过 reconnectSingleClient 的去重逻辑
+        return this.tryConnect(ip, port);
+    }
 }
 
 const clientManager = new ClientManager();
