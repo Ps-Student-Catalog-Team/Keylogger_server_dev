@@ -287,7 +287,7 @@ function renderClientsTable() {
 
 // 填充日志页面的客户端下拉框
 function populateClientSelect() {
-    let html = '<option value="">选择客户端</option>';
+    let html = '<option value="">全部</option>';
     clients.forEach(client => {
         html += `<option value="${escapeHtml(client.id)}">${escapeHtml(client.ip)}:${escapeHtml(client.port)} (${escapeHtml(client.status)})</option>`;
     });
