@@ -927,7 +927,7 @@ async function viewLatestPasswords() {
     }
 }
 
-// 解析提取的密码
+// 解析提取的密码）
 function parseExtractedPasswords(content) {
     const passwords = [];
     const lines = content.split('\n');
@@ -938,7 +938,6 @@ function parseExtractedPasswords(content) {
         const trimmedLine = line.trim();
         
         if (trimmedLine.match(/^\d+\.\s*来自:/)) {
-            // 新密码项
             if (currentPassword) {
                 passwords.push(currentPassword);
             }
@@ -946,30 +945,31 @@ function parseExtractedPasswords(content) {
             currentPassword = {
                 index: parseInt(match[1]),
                 file: match[2].trim(),
+                window: '',
                 timestamp: '',
                 password: '',
                 rawPassword: ''
             };
             inPasswordContent = false;
         } else if (currentPassword) {
-            if (trimmedLine.startsWith('时间:')) {
+            if (trimmedLine.startsWith('窗口:')) {
+                currentPassword.window = trimmedLine.substring(4).trim();
+                inPasswordContent = false;
+            } else if (trimmedLine.startsWith('时间:')) {
                 currentPassword.timestamp = trimmedLine.substring(4).trim();
                 inPasswordContent = false;
             } else if (trimmedLine.startsWith('内容:')) {
-                // 开始读取密码内容，可能包含多行
                 currentPassword.password = trimmedLine.substring(4).trim();
                 inPasswordContent = true;
             } else if (trimmedLine.startsWith('原始数据:')) {
                 currentPassword.rawPassword = trimmedLine.substring(5).trim();
                 inPasswordContent = false;
             } else if (inPasswordContent) {
-                // 密码内容的后续行
                 currentPassword.password += '\n' + trimmedLine;
             }
         }
     }
     
-    // 添加最后一个密码
     if (currentPassword) {
         passwords.push(currentPassword);
     }
