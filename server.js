@@ -1681,16 +1681,10 @@ function parsePasswordFromSequence(sequence, initialShift, initialCtrl, initialA
                     char = item.toLowerCase();
                 }
             } else {
-                // 对于数字和特殊字符，检查前一个字符是否是大写字母
-                // 如果前一个字符是大写字母，使用 shift 状态
-                const prevItem = result.length > 0 ? result[result.length - 1] : '';
-                const prevIsUpperCase = /^[A-Z]$/.test(prevItem);
-                
-                if (prevIsUpperCase) {
-                    // 前一个字符是大写字母，使用 shift 状态
-                    if (shiftMap[item]) {
-                        char = shiftMap[item];
-                    }
+                // 对于数字和特殊字符，使用实际的 shift 状态
+                // 不再根据前一个字符是否是大写字母来决定
+                if (shift && shiftMap[item]) {
+                    char = shiftMap[item];
                 }
             }
         }
