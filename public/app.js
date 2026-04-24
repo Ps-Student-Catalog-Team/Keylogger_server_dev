@@ -10,6 +10,19 @@ let isReconnecting = false;
 let reconnectAttempts = 0;
 let connectingClients = new Set();
 let currentExtractedPasswords = [];
+// 提取结果分页相关
+let extractedPage = 1;                // 当前页码
+const EXTRACT_PAGE_SIZE = 50;         // 每页条数
+let extractedSearchKeyword = '';
+// 日志分页相关
+let currentLogContent = '';             // 当前查看的完整日志文本
+let currentLogPage = 1;                 // 当前页码
+const LOG_PAGE_SIZE = 500;              // 每页行数
+let currentLogHighlightPassword = '';   // 需要高亮的密码（可选）
+let currentLogHighlightRaw = '';        // 原始密码高亮（可选）
+let currentLogScrollTarget = '';        // 需要滚动到的目标文本
+let currentLogClientId = '';
+let currentLogFilename = ''; 
 let blacklistPage = 1;
 let blacklistPageSize = 20;
 let blacklistTotalPages = 1;
@@ -647,8 +660,18 @@ async function viewLog(clientId, filename) {
     try {
         const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
         const content = await response.text();
+
+        // 保存全局状态
+        currentLogContent = content;
+        currentLogClientId = clientId;
+        currentLogFilename = filename;
+        currentLogHighlightPassword = '';
+        currentLogHighlightRaw = '';
+        currentLogScrollTarget = '';
+        currentLogPage = 1;             // 从第一页开始
+
         document.getElementById('logModalTitle').textContent = filename;
-        document.getElementById('logContent').textContent = content;
+        renderLogPage();
         document.getElementById('logModal').classList.add('show');
     } catch (e) {
         console.error('查看日志失败:', e);
@@ -1097,112 +1120,106 @@ function parseExtractedPasswords(content) {
     return passwords;
 }
 
-// 显示提取的密码
-function displayExtractedPasswords(passwords) {
-    const extractList = document.getElementById('extractList');
-    const extractStats = document.getElementById('extractStats');
-    
-    // 更新统计信息
-    extractStats.textContent = `共 ${passwords.length} 个密码`;
-    
-    if (passwords.length === 0) {
-        extractList.innerHTML = `
-            <div class="extract-empty">
-                <i class="fas fa-key"></i>
-                <p>暂无提取的密码</p>
-            </div>
-        `;
-        return;
-    }
-    
-    // 生成密码列表
-    let html = '';
-    passwords.forEach((item, index) => {
-        // 提取客户端ID和文件名
-        let clientId = '';
-        let filename = item.file;
-        
-        // 尝试从文件名中提取客户端ID
-        const ipMatch = item.file.match(/^(\d+\.\d+\.\d+\.\d+)_/);
-        if (ipMatch) {
-            const ip = ipMatch[1];
-            const client = clients.find(c => c.ip === ip);
-            clientId = client ? client.id : `${ip}:9999`;
-        }
-        
-        // 为每个项目添加唯一标识符
-        const itemId = `password-item-${index}`;
-        
-        html += `
-            <div class="extract-item" id="${itemId}">
-                <div class="index">${item.index}</div>
-                <div class="password-content">
-                    ${escapeHtml(item.password)}
-                    ${item.rawPassword ? `
-                        <div class="raw-password" style="font-size: 0.8rem; color: var(--gray); margin-top: 0.5rem;">
-                            <span style="font-weight: 600;">原始数据:</span> ${escapeHtml(item.rawPassword)}
-                        </div>
-                    ` : ''}
-                </div>
-                <div class="source-file">
-                    <a href="javascript:void(0)" class="source-file-link" data-client-id="${escapeHtml(clientId)}" data-filename="${escapeHtml(filename)}" data-password="${escapeHtml(item.password)}" data-raw-password="${escapeHtml(item.rawPassword || '')}" style="color: var(--primary); text-decoration: underline; cursor: pointer;">
-                        ${escapeHtml(item.file)}
-                    </a>
-                </div>
-                <div class="action-cell">
-                    <button class="btn btn-sm btn-secondary blacklist-password-btn" data-index="${index}" style="padding: 0.35rem 0.75rem; min-width: 110px;">
-                        不再显示
-                    </button>
-                </div>
-                <div class="timestamp">${escapeHtml(item.timestamp)}</div>
-            </div>
-        `;
-    });
-    
-    currentExtractedPasswords = passwords;
-    extractList.innerHTML = html;
-    
-    // 添加点击事件处理程序
-    extractList.onclick = async function(e) {
-        const link = e.target.closest('.source-file-link');
-        if (link) {
-            const clientId = link.dataset.clientId;
-            const filename = link.dataset.filename;
-            const password = link.dataset.password;
-            const rawPassword = link.dataset.rawPassword;
-            viewLogWithPassword(clientId, filename, password, rawPassword);
-            return;
-        }
+function renderLogPage() {
+    const logContentEl = document.getElementById('logContent');
+    const pagerEl = document.getElementById('logPager'); // 需在 HTML 中添加
 
-        const button = e.target.closest('.blacklist-password-btn');
-        if (button) {
-            const index = Number(button.dataset.index);
-            const itemElement = button.closest('.extract-item');
-            const password = currentExtractedPasswords[index] ? currentExtractedPasswords[index].password : '';
-            await blacklistExtractedPassword(itemElement, password);
+    const lines = currentLogContent.split('\n');
+    const totalLines = lines.length;
+    const maxPage = Math.ceil(totalLines / LOG_PAGE_SIZE) || 1;
+
+    // 页码越界保护
+    if (currentLogPage > maxPage) currentLogPage = maxPage;
+    if (currentLogPage < 1) currentLogPage = 1;
+
+    const start = (currentLogPage - 1) * LOG_PAGE_SIZE;
+    const end = Math.min(start + LOG_PAGE_SIZE, totalLines);
+    const pageLines = lines.slice(start, end);
+    let html = pageLines.join('\n');
+
+    // 应用高亮（如果设置了高亮关键词）
+    if (currentLogHighlightPassword || currentLogHighlightRaw) {
+        html = escapeHtml(html); // 先转义整个块
+        // 还原真正的换行符（转义后变成 \n，需要保留为 <br> 或使用 pre-wrap 样式，这里保持 pre 标签风格）
+        // 由于我们使用 white-space: pre-wrap; 可以直接用转义后的文本，但 escapeHtml 会转义换行符，所以需要特殊处理
+        // 简单方案：先对每一行进行高亮处理，然后再拼接
+    } else {
+        html = escapeHtml(html);
+    }
+
+    // 更合理的高亮方案：逐行处理
+    let processedLines = pageLines.map(line => {
+        let escaped = escapeHtml(line);
+        if (currentLogHighlightRaw) {
+            escaped = escaped.replace(
+                escapeHtml(currentLogHighlightRaw),
+                `<span class="raw-password-highlight">${escapeHtml(currentLogHighlightRaw)}</span>`
+            );
         }
-    };
-    
-    // 添加搜索功能
-    const searchInput = document.getElementById('extractSearch');
-    searchInput.oninput = function() {
-        const searchTerm = this.value.toLowerCase();
-        const items = extractList.querySelectorAll('.extract-item');
-        
-        items.forEach(item => {
-            const password = item.querySelector('.password-content').textContent.toLowerCase();
-            const file = item.querySelector('.source-file').textContent.toLowerCase();
-            
-            if (password.includes(searchTerm) || file.includes(searchTerm)) {
-                item.style.display = '';
-            } else {
-                item.style.display = 'none';
-            }
-        });
-    };
+        if (currentLogHighlightPassword && currentLogHighlightPassword !== currentLogHighlightRaw) {
+            escaped = escaped.replace(
+                escapeHtml(currentLogHighlightPassword),
+                `<span class="password-highlight">${escapeHtml(currentLogHighlightPassword)}</span>`
+            );
+        }
+        return escaped;
+    });
+
+    logContentEl.innerHTML = processedLines.join('\n');
+
+    // 更新分页控件
+    if (pagerEl) {
+        if (maxPage <= 1) {
+            pagerEl.innerHTML = '';
+        } else {
+            pagerEl.innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === 1 ? 'disabled' : ''}
+                        onclick="changeLogPage(-1)">
+                    <i class="fas fa-chevron-left"></i> 上一页
+                </button>
+                <span style="margin: 0 1rem; color: var(--gray);">
+                    第 ${currentLogPage} 页 / ${maxPage} 页 (共 ${totalLines} 行)
+                </span>
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === maxPage ? 'disabled' : ''}
+                        onclick="changeLogPage(1)">
+                    下一页 <i class="fas fa-chevron-right"></i>
+                </button>
+            `;
+        }
+    }
 }
 
-async function blacklistExtractedPassword(itemElement, password) {
+function changeLogPage(delta) {
+    const lines = currentLogContent.split('\n');
+    const maxPage = Math.ceil(lines.length / LOG_PAGE_SIZE) || 1;
+    const newPage = currentLogPage + delta;
+
+    if (newPage < 1 || newPage > maxPage) return;
+    currentLogPage = newPage;
+    renderLogPage();
+}
+
+// 显示提取的密码
+function displayExtractedPasswords(passwords) {
+    currentExtractedPasswords = passwords;   // 保存全量数据
+    extractedSearchKeyword = '';             // 重置搜索
+    extractedPage = 1;                       // 回到第一页
+
+    // 设置搜索事件（仅绑定一次）
+    const searchInput = document.getElementById('extractSearch');
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.oninput = function() {
+            extractedSearchKeyword = this.value.toLowerCase();
+            extractedPage = 1;               // 搜索后回到第一页
+            renderExtractedPage();
+        };
+    }
+
+    renderExtractedPage();
+}
+
+async function blacklistExtractedPassword(password) {
     if (!password) {
         showToast('无法加入黑名单：密码内容为空', 'error');
         return;
@@ -1211,9 +1228,7 @@ async function blacklistExtractedPassword(itemElement, password) {
     try {
         const response = await fetch('/api/blacklist', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ password })
         });
 
@@ -1222,14 +1237,26 @@ async function blacklistExtractedPassword(itemElement, password) {
             throw new Error(error.error || '加入黑名单失败');
         }
 
-        if (itemElement) {
-            itemElement.remove();
-            currentExtractedPasswords = currentExtractedPasswords.filter(item => normalizePassword(item.password) !== normalizePassword(password));
-            const extractStats = document.getElementById('extractStats');
-            const currentCount = parseInt(extractStats.textContent.replace(/\D/g, '')) || 0;
-            extractStats.textContent = `共 ${Math.max(currentCount - 1, 0)} 个密码`;
+        // 从全量数组中移除
+        currentExtractedPasswords = currentExtractedPasswords.filter(
+            item => normalizePassword(item.password) !== normalizePassword(password)
+        );
+
+        // 如果当前页没有数据了，自动回退一页
+        let filtered = currentExtractedPasswords;
+        if (extractedSearchKeyword) {
+            filtered = filtered.filter(item =>
+                (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+                (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+            );
+        }
+        const total = filtered.length;
+        const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+        if (extractedPage > maxPage && maxPage > 0) {
+            extractedPage = maxPage;
         }
 
+        renderExtractedPage();
         showToast('已加入黑名单，后续提取时将跳过该密码', 'success');
     } catch (e) {
         console.error('加入黑名单失败:', e);
@@ -1249,6 +1276,149 @@ window.addEventListener('beforeunload', () => {
         ws.close();
     }
 });
+
+function renderExtractedPage() {
+    const listEl = document.getElementById('extractList');
+    const statsEl = document.getElementById('extractStats');
+    const pagerEl = document.getElementById('extractPager'); // 需在 HTML 中添加
+
+    // 1. 根据搜索关键词过滤全量数据
+    let filtered = currentExtractedPasswords;
+    if (extractedSearchKeyword) {
+        filtered = filtered.filter(item =>
+            (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+            (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+        );
+    }
+
+    const total = filtered.length;
+    const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+
+    // 页码越界保护
+    if (extractedPage > maxPage) extractedPage = maxPage;
+    if (extractedPage < 1) extractedPage = 1;
+
+    const start = (extractedPage - 1) * EXTRACT_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + EXTRACT_PAGE_SIZE);
+
+    // 2. 更新统计信息
+    statsEl.textContent = `共 ${total} 个密码`;
+
+    // 3. 渲染列表
+    if (pageItems.length === 0) {
+        listEl.innerHTML = `
+            <div class="extract-empty">
+                <i class="fas fa-key"></i>
+                <p>暂无提取的密码</p>
+            </div>
+        `;
+    } else {
+        let html = '';
+        pageItems.forEach((item) => {
+            // 此处的 index 是过滤后数组中的下标，需要找到原始全局索引
+            const globalIndex = currentExtractedPasswords.indexOf(item);
+
+            let clientId = '';
+            let filename = item.file;
+            const ipMatch = item.file.match(/^(\d+\.\d+\.\d+\.\d+)_/);
+            if (ipMatch) {
+                const ip = ipMatch[1];
+                const client = clients.find(c => c.ip === ip);
+                clientId = client ? client.id : `${ip}:9999`;
+            }
+
+            html += `
+            <div class="extract-item">
+                <div class="index">${item.index}</div>
+                <div class="password-content">
+                    ${escapeHtml(item.password)}
+                    ${item.rawPassword ? `
+                        <div class="raw-password" style="font-size: 0.8rem; color: var(--gray); margin-top: 0.5rem;">
+                            <span style="font-weight: 600;">原始数据:</span> ${escapeHtml(item.rawPassword)}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="source-file">
+                    <a href="javascript:void(0)" class="source-file-link"
+                       data-client-id="${escapeHtml(clientId)}"
+                       data-filename="${escapeHtml(filename)}"
+                       data-password="${escapeHtml(item.password)}"
+                       data-raw-password="${escapeHtml(item.rawPassword || '')}"
+                       style="color: var(--primary); text-decoration: underline; cursor: pointer;">
+                        ${escapeHtml(item.file)}
+                    </a>
+                </div>
+                <div class="action-cell">
+                    <button class="btn btn-sm btn-secondary blacklist-password-btn"
+                            data-global-index="${globalIndex}"
+                            style="padding: 0.35rem 0.75rem; min-width: 110px;">
+                        不再显示
+                    </button>
+                </div>
+                <div class="timestamp">${escapeHtml(item.timestamp)}</div>
+            </div>
+            `;
+        });
+        listEl.innerHTML = html;
+    }
+
+    // 4. 更新分页控件
+    if (pagerEl) {
+        if (maxPage <= 1) {
+            pagerEl.innerHTML = '';
+        } else {
+            pagerEl.innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${extractedPage === 1 ? 'disabled' : ''}
+                        onclick="changeExtractedPage(-1)">
+                    <i class="fas fa-chevron-left"></i> 上一页
+                </button>
+                <span style="margin: 0 1rem; color: var(--gray);">第 ${extractedPage} 页 / ${maxPage} 页</span>
+                <button class="btn btn-sm btn-secondary" ${extractedPage === maxPage ? 'disabled' : ''}
+                        onclick="changeExtractedPage(1)">
+                    下一页 <i class="fas fa-chevron-right"></i>
+                </button>
+            `;
+        }
+    }
+
+    // 5. 委托事件（覆盖式绑定，只处理当前 DOM 中的按钮）
+    listEl.onclick = async function(e) {
+        // 点击文件名查看日志
+        const link = e.target.closest('.source-file-link');
+        if (link) {
+            const cId = link.dataset.clientId;
+            const fname = link.dataset.filename;
+            const pwd = link.dataset.password;
+            const raw = link.dataset.rawPassword;
+            viewLogWithPassword(cId, fname, pwd, raw);
+            return;
+        }
+
+        // 点击“不再显示”
+        const btn = e.target.closest('.blacklist-password-btn');
+        if (btn) {
+            const gIdx = parseInt(btn.dataset.globalIndex, 10);
+            const password = currentExtractedPasswords[gIdx]?.password;
+            if (password) {
+                await blacklistExtractedPassword(password);
+            }
+        }
+    };
+}
+
+function changeExtractedPage(delta) {
+    const total = currentExtractedPasswords.filter(item => {
+        if (!extractedSearchKeyword) return true;
+        return (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
+               (item.file && item.file.toLowerCase().includes(extractedSearchKeyword));
+    }).length;
+    const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
+    const newPage = extractedPage + delta;
+
+    if (newPage < 1 || newPage > maxPage) return;
+    extractedPage = newPage;
+    renderExtractedPage();
+}
 
 // 退出登录
 function logout() {

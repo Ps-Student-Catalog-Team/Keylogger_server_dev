@@ -1429,8 +1429,8 @@
                 <button class="close-btn" onclick="hideModal('logModal')">&times;</button>
             </div>
             <div class="log-viewer" id="logContent"></div>
+            <div id="logPager" style="text-align: center; padding: 0.75rem; border-top: 1px solid var(--gray-light); margin-top: 0.5rem;"></div>
         </div>
-    </div>
 
     <!-- 提取结果模态框 -->
     <div class="modal" id="extractModal" style="z-index: 999;">
@@ -1447,15 +1447,16 @@
                 </div>
             </div>
             <div class="extract-container" style="overflow: hidden; display: flex; flex-direction: column; height: calc(80vh - 120px);">
-                <div class="extract-header" style="display: grid; grid-template-columns: 60px 1fr 1fr 120px 150px; padding: 1rem; background: var(--light); border-bottom: 1px solid var(--gray-light); font-weight: 600; color: var(--dark);">
-                    <div>序号</div>
-                    <div>密码内容</div>
-                    <div>来源文件</div>
-                    <div>操作</div>
-                    <div>时间戳</div>
-                </div>
-                <div class="extract-list" id="extractList" style="flex: 1; overflow-y: auto;"></div>
+            <div class="extract-header" style="display: grid; grid-template-columns: 60px 1fr 1fr 120px 150px; padding: 1rem; background: var(--light); border-bottom: 1px solid var(--gray-light); font-weight: 600; color: var(--dark);">
+                <div>序号</div>
+                <div>密码内容</div>
+                <div>来源文件</div>
+                <div>操作</div>
+                <div>时间戳</div>
             </div>
+            <div class="extract-list" id="extractList" style="flex: 1; overflow-y: auto;"></div>
+            <div id="extractPager" style="text-align: center; padding: 0.75rem; border-top: 1px solid var(--gray-light);"></div>
+        </div>
         </div>
     </div>
 
