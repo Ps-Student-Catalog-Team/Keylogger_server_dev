@@ -376,9 +376,9 @@ class AlistClient {
     async _request(method, endpoint, data = null, options = {}, retry = true) {
         await this._ensureToken();
         const url = `${this.baseUrl}${endpoint}`;
-        this.logger.info(`发送 ${method} 请求到 ${url}`);
+        this.logger.debug(`发送 ${method} 请求到 ${url}`);
         if (data) {
-            this.logger.info(`请求数据: ${JSON.stringify(data)}`);
+            this.logger.debug(`请求数据: ${JSON.stringify(data)}`);
         }
         const headers = {
             'Authorization': this.token,
@@ -392,8 +392,8 @@ class AlistClient {
                 headers,
                 ...options
             });
-            this.logger.info(`请求成功，响应状态码: ${response.status}`);
-            this.logger.info(`响应数据: ${JSON.stringify(response.data)}`);
+            this.logger.debug(`请求成功，响应状态码: ${response.status}`);
+            this.logger.debug(`响应数据: ${JSON.stringify(response.data)}`);
             return response.data;
         } catch (error) {
             if (error.response) {
@@ -408,9 +408,9 @@ class AlistClient {
                 this.logger.warn('Token 失效，重新登录');
                 await this._login();
                 headers.Authorization = this.token;
-                this.logger.info(`重新发送 ${method} 请求到 ${url}`);
+                this.logger.debug(`重新发送 ${method} 请求到 ${url}`);
                 const retryResponse = await this.axiosInstance({ method, url, data, headers, ...options });
-                this.logger.info(`重试请求成功，响应状态码: ${retryResponse.status}`);
+                this.logger.debug(`重试请求成功，响应状态码: ${retryResponse.status}`);
                 return retryResponse.data;
             }
             this.logger.error(`Alist 请求失败: ${method} ${endpoint}`, { error: error.message });
@@ -467,7 +467,7 @@ class AlistClient {
         } catch (err) {
             if (err.response && err.response.status === 404) {
                 await this._request('POST', '/api/fs/mkdir', { path: fullPath });
-                this.logger.info(`创建目录: ${fullPath}`);
+                this.logger.debug(`创建目录: ${fullPath}`);
             } else {
                 throw err;
             }
@@ -477,31 +477,31 @@ class AlistClient {
     async listFiles(dirPath) {
         const fullPath = this._getFullPath(dirPath);
         const cacheKey = this._getCacheKey('list', fullPath);
-        this.logger.info(`开始列出目录 ${fullPath} 的文件`);
+        this.logger.debug(`开始列出目录 ${fullPath} 的文件`);
 
         const cached = this.cache.get(cacheKey);
         if (cached) {
-            this.logger.info(`从缓存获取目录 ${fullPath} 的文件列表，共 ${cached.length} 个文件`);
+            this.logger.debug(`从缓存获取目录 ${fullPath} 的文件列表，共 ${cached.length} 个文件`);
             return cached;
         }
 
         try {
-            this.logger.info(`发送请求列出目录 ${fullPath} 的文件`);
+            this.logger.debug(`发送请求列出目录 ${fullPath} 的文件`);
             const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
-            this.logger.info(`请求成功，响应代码: ${result.code}`);
+            this.logger.debug(`请求成功，响应代码: ${result.code}`);
             if (result.code === 200) {
                 let items = [];
                 if (result.data?.content && Array.isArray(result.data.content)) {
                     items = result.data.content;
-                    this.logger.info(`从 result.data.content 获取到 ${items.length} 个文件`);
+                    this.logger.debug(`从 result.data.content 获取到 ${items.length} 个文件`);
                 } else if (result.data?.files && Array.isArray(result.data.files)) {
                     items = result.data.files;
-                    this.logger.info(`从 result.data.files 获取到 ${items.length} 个文件`);
+                    this.logger.debug(`从 result.data.files 获取到 ${items.length} 个文件`);
                 } else if (Array.isArray(result.data)) {
                     items = result.data;
-                    this.logger.info(`从 result.data 获取到 ${items.length} 个文件`);
+                    this.logger.debug(`从 result.data.files 获取到 ${items.length} 个文件`);
                 } else {
-                    this.logger.info(`无法从响应中提取文件列表，响应数据: ${JSON.stringify(result.data)}`);
+                    this.logger.debug(`无法从响应中提取文件列表，响应数据: ${JSON.stringify(result.data)}`);
                 }
                 const transformed = items.map(item => ({
                     filename: item.name || item.filename || 'unknown',
@@ -509,15 +509,15 @@ class AlistClient {
                     uploadTime: new Date(item.modified || item.updated || item.mtime || Date.now())
                 }));
                 this.cache.set(cacheKey, transformed);
-                this.logger.info(`目录 ${fullPath} 的文件列表获取完成，共 ${transformed.length} 个文件`);
+                this.logger.debug(`目录 ${fullPath} 的文件列表获取完成，共 ${transformed.length} 个文件`);
                 return transformed;
             }
-            this.logger.info(`响应代码不是 200，返回空列表`);
+            this.logger.debug(`响应代码不是 200，返回空列表`);
             return [];
         } catch (err) {
             this.logger.error(`列出目录 ${fullPath} 的文件失败`, { error: err.message });
             if (err.response && err.response.status === 404) {
-                this.logger.info(`目录 ${fullPath} 不存在，返回空列表`);
+                this.logger.debug(`目录 ${fullPath} 不存在，返回空列表`);
                 return [];
             }
             throw err;
@@ -596,7 +596,7 @@ class AlistClient {
             }
         });
         this._invalidateCache(this._getCacheKey('list', fullDir));
-        this.logger.info(`文件上传成功: ${fullPath}`);
+        this.logger.debug(`文件上传成功: ${fullPath}`);
         return { success: true, filename };
     }
 
@@ -612,7 +612,7 @@ class AlistClient {
         });
 
         this._invalidateCache(this._getCacheKey('list', dir));
-        this.logger.info(`文件已删除: ${fullPath}`);
+        this.logger.debug(`文件已删除: ${fullPath}`);
         return { success: true };
     }
 }
@@ -782,7 +782,7 @@ async function updateLastSeen(clientId) {
 async function deleteKnownClientFromDB(clientId) {
     try {
         await executeWithRetry('DELETE FROM known_clients WHERE id = ?', [clientId]);
-        logger.info(`数据库记录已删除: ${clientId}`);
+        logger.debug(`数据库记录已删除: ${clientId}`);
     } catch (error) {
         logger.warn('从数据库删除客户端失败', { error: error.message, clientId });
     }
@@ -883,7 +883,7 @@ class ClientManager {
 
         currentSocket.on('close', () => {
             if (client.socket === currentSocket) {
-                this.logger.info(`客户端 ${client.id} 连接断开`);
+                this.logger.debug(`客户端 ${client.id} 连接断开`);
                 this.markClientOffline(client);
             }
         });
@@ -1008,10 +1008,10 @@ class ClientManager {
                 this.logger.warn(`尝试重连未知客户端: ${clientId}`);
                 return;
             }
-            this.logger.info(`尝试重连: ${clientId}`);
+            this.logger.debug(`尝试重连: ${clientId}`);
             const clientInfo = await this.tryConnect(info.ip, info.port);
             if (clientInfo) {
-                this.logger.info(`重连成功: ${clientId}`);
+                this.logger.debug(`重连成功: ${clientId}`);
             } else {
                 this.logger.debug(`重连失败: ${clientId}`);
             }
@@ -1402,11 +1402,11 @@ app.get('/api/clients', (req, res) => {
 
 app.get('/api/update/get_version', asyncHandler(async (req, res) => {
     try {
-        logger.info('开始获取版本列表');
+        logger.debug('开始获取版本列表');
         const cacheKey = 'version_list';
         const cached = versionCache.get(cacheKey);
         if (cached) {
-            logger.info('从缓存返回版本列表');
+            logger.debug('从缓存返回版本列表');
             return res.json({
                 code: 200,
                 data: {
@@ -1513,7 +1513,7 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
         
         if (activeVersionRows.length > 0) {
             const activeVersion = activeVersionRows[0];
-            logger.info(`返回数据库激活版本: ${activeVersion.version}`);
+            logger.debug(`返回数据库激活版本: ${activeVersion.version}`);
             return res.json({ 
                 code: 200, 
                 data: { 
@@ -1525,7 +1525,7 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
         }
         
         // 数据库中没有激活版本，返回空版本（通知客户端无需更新）
-        logger.info('数据库中没有激活版本，返回空版本');
+        logger.debug('数据库中没有激活版本，返回空版本');
         return res.json({
             code: 200,
             data: {
@@ -2117,7 +2117,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
     }
 
     if (!needFullReextraction && extractionCache.passwords.length > 0) {
-        logger.info('缓存完全有效，直接返回密码提取结果');
+        logger.debug('缓存完全有效，直接返回密码提取结果');
         return res.json({ success: true, count: extractionCache.passwords.length });
     }
 
@@ -2132,7 +2132,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         }
     }
 
-    logger.info(`密码提取：共 ${logFiles.length} 个日志文件，其中 ${filesToProcess.length} 个需要处理`);
+    logger.debug(`密码提取：共 ${logFiles.length} 个日志文件，其中 ${filesToProcess.length} 个需要处理`);
 
     // 加载黑名单缓存
     await loadBlacklistCache();
