@@ -420,16 +420,65 @@ function showClientModal(clientId) {
 }
 
 // 获取日志文件信息
-function getLogsInfo() {
-    sendCommand('get_logs_info');
+async function getLogsInfo() {
+    if (!currentClientId) {
+        showToast('请先选择客户端', 'error');
+        return;
+    }
+    
+    try {
+        showToast('正在获取日志文件信息...', 'success');
+        const response = await fetch(`/api/clients/${currentClientId}/logs/info`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            showToast('已发送获取日志文件信息请求', 'success');
+        } else {
+            showToast(`获取失败: ${result.error || '未知错误'}`, 'error');
+        }
+    } catch (e) {
+        console.error('获取日志文件信息失败:', e);
+        showToast('获取请求失败', 'error');
+    }
 }
 
 // 删除指定日志
-function deleteClientLog(filename) {
+async function deleteClientLog(filename) {
+    if (!currentClientId) {
+        showToast('请先选择客户端', 'error');
+        return;
+    }
+    
     if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) {
         return;
     }
-    sendCommand('delete_log', { file: filename });
+    
+    try {
+        showToast('正在删除日志文件...', 'success');
+        const response = await fetch(`/api/clients/${currentClientId}/logs/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: filename })
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            showToast('已发送删除日志文件请求', 'success');
+            // 刷新日志列表
+            if (document.getElementById('clientModal').classList.contains('show')) {
+                loadClientLogs(currentClientId);
+            }
+        } else {
+            showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
+        }
+    } catch (e) {
+        console.error('删除日志文件失败:', e);
+        showToast('删除请求失败', 'error');
+    }
 }
 
 // 暂停录制

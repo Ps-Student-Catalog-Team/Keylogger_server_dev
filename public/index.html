@@ -1402,6 +1402,13 @@
                     <label>状态管理</label>
                     <div class="action-btns">
                         <button class="btn btn-primary" onclick="sendCommand('ping')">心跳检测</button>
+                        <button class="btn btn-info" onclick="getLogsInfo()">获取日志信息</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>日志管理</label>
+                    <div class="action-btns">
+                        <button class="btn btn-danger" onclick="deleteClientLog(prompt('请输入要删除的日志文件名:'))">删除指定日志</button>
                     </div>
                 </div>
                 <div class="form-group">
