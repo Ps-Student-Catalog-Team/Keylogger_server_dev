@@ -523,7 +523,7 @@ class AlistClient {
             buffer = Buffer.from(result.data.content, 'base64');
         } else {
             // === 增加兜底：使用 Alist 公共直链 /d/ ===
-            const downloadUrl = `${this.baseUrl}/d${encodeURIComponent(fullPath)}`;
+            const downloadUrl = `${this.baseUrl}/d${encodeURI(fullPath)}`;
             this.logger.warn(`raw_url 和 content 均缺，改用直链: ${downloadUrl}`);
             const response = await this.axiosInstance.get(downloadUrl, {
                 responseType: 'arraybuffer',
@@ -536,6 +536,8 @@ class AlistClient {
         const encoding = detected.encoding || 'utf-8';
         return iconv.decode(buffer, encoding);
     }
+
+    this.logger.error(`读取文件失败，Alist 返回值异常`, { path: fullPath, response: result });
     throw new Error('文件内容获取失败或文件不存在');
 }
 

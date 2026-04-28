@@ -1200,7 +1200,8 @@ function renderLogPage() {
     const pagerEl = document.getElementById('logPager');
     if (!currentLogContent) return;
 
-    let content = currentLogContent;
+    // 规范化换行，避免 CRLF 导致搜索失败
+    let content = currentLogContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
     // 步骤 1：在原始文本中插入高亮占位符（使用安全文本占位符，避免控制字符问题）
     const rawStart = '[[[KEYLOGGER_RAW_START]]]';
@@ -1212,7 +1213,9 @@ function renderLogPage() {
     let rawHighlighted = false;
     if (currentLogHighlightRaw) {
         const rawSearchText = currentLogHighlightRaw.replace(/↵/g, '\n');
-        const rawRegex = new RegExp(escapeRegexSpecialChars(rawSearchText), 'gi');
+        const rawPattern = escapeRegexSpecialChars(rawSearchText)
+            .replace(/\n/g, '(?:\\r\\n|\\n)');
+        const rawRegex = new RegExp(rawPattern, 'gi');
         const replaced = content.replace(
             rawRegex,
             (match) => {
