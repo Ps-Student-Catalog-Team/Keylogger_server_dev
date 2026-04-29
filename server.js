@@ -372,7 +372,7 @@ class AlistClient {
         this.loginPromise = null;
     }
 
-    async _request(method, endpoint, data = null, options = {}, retry = true) {
+    async _request(method, endpoint, data = null, options = {}, retry = true, retryCount = 0, maxRetries = 3) {
         await this._ensureToken();
         const url = `${this.baseUrl}${endpoint}`;
         this.logger.debug(`发送 ${method} 请求到 ${url}`);
@@ -393,6 +393,10 @@ class AlistClient {
             });
             return response.data;
         } catch (error) {
+            const isDbLocked = error.response?.data?.message?.includes('database is locked');
+            const isNetworkError = !error.response || error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT';
+            const shouldRetry = retry && retryCount < maxRetries && (error.response?.status === 401 || error.response?.status === 500 || isDbLocked || isNetworkError);
+            
             if (error.response) {
                 this.logger.error(`请求失败，响应状态码: ${error.response.status}`);
                 this.logger.error(`响应数据: ${JSON.stringify(error.response.data)}`);
@@ -401,13 +405,22 @@ class AlistClient {
             } else {
                 this.logger.error(`请求失败，错误: ${error.message}`);
             }
-            if (retry && error.response && error.response.status === 401) {
+            
+            if (shouldRetry) {
+                const delayMs = Math.min(1000 * Math.pow(2, retryCount), 10000);
+                this.logger.warn(`Alist ${isDbLocked ? '数据库锁定' : '请求失败'},${delayMs}ms 后进行第 ${retryCount + 1} 次重试`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return this._request(method, endpoint, data, options, retry, retryCount + 1, maxRetries);
+            }
+            
+            if (error.response && error.response.status === 401) {
                 this.logger.warn('Token 失效，重新登录');
                 await this._login();
                 headers.Authorization = this.token;
                 const retryResponse = await this.axiosInstance({ method, url, data, headers, ...options });
                 return retryResponse.data;
             }
+            
             this.logger.error(`Alist 请求失败: ${method} ${endpoint}`, { error: error.message });
             throw error;
         }
@@ -469,17 +482,19 @@ class AlistClient {
         }
     }
 
-    async listFiles(dirPath, force = false) {
+    async listFiles(dirPath, force = false, retryCount = 0, maxRetries = 3) {
         const fullPath = this._getFullPath(dirPath);
         const cacheKey = this._getCacheKey('list', fullPath);
 
-        const cached = this.cache.get(cacheKey);
-        if (cached) {
-            return cached;
+        if (!force) {
+            const cached = this.cache.get(cacheKey);
+            if (cached) {
+                return cached;
+            }
         }
 
         try {
-            const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`);
+            const result = await this._request('GET', `/api/fs/list?path=${encodeURIComponent(fullPath)}`, null, {}, true, retryCount, maxRetries);
             if (result.code === 200) {
                 let items = [];
                 if (result.data?.content && Array.isArray(result.data.content)) {
@@ -507,39 +522,56 @@ class AlistClient {
         }
     }
 
-    async readFile(filePath) {
-    const fullPath = this._getFullPath(filePath);
-    const result = await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`);
+    async readFile(filePath, retryCount = 0, maxRetries = 5) {
+        const fullPath = this._getFullPath(filePath);
+        try {
+            const result = await this._request('GET', `/api/fs/get?path=${encodeURIComponent(fullPath)}`, null, {}, true, retryCount, maxRetries);
 
-    if (result.code === 200 && result.data) {
-        let buffer;
-        if (result.data.raw_url) {
-            const response = await this.axiosInstance.get(result.data.raw_url, {
-                responseType: 'arraybuffer',
-                headers: { 'Authorization': this.token }
-            });
-            buffer = Buffer.from(response.data);
-        } else if (result.data.content) {
-            buffer = Buffer.from(result.data.content, 'base64');
-        } else {
-            // === 增加兜底：使用 Alist 公共直链 /d/ ===
-            const downloadUrl = `${this.baseUrl}/d${encodeURI(fullPath)}`;
-            this.logger.warn(`raw_url 和 content 均缺，改用直链: ${downloadUrl}`);
-            const response = await this.axiosInstance.get(downloadUrl, {
-                responseType: 'arraybuffer',
-                headers: { 'Authorization': this.token }
-            });
-            buffer = Buffer.from(response.data);
+            if (result.code === 200 && result.data) {
+                let buffer;
+                if (result.data.raw_url) {
+                    const response = await this.axiosInstance.get(result.data.raw_url, {
+                        responseType: 'arraybuffer',
+                        headers: { 'Authorization': this.token },
+                        timeout: 30000
+                    });
+                    buffer = Buffer.from(response.data);
+                } else if (result.data.content) {
+                    buffer = Buffer.from(result.data.content, 'base64');
+                } else {
+                    // === 增加兜底：使用 Alist 公共直链 /d/ ===
+                    const downloadUrl = `${this.baseUrl}/d${encodeURI(fullPath)}`;
+                    this.logger.warn(`raw_url 和 content 均缺，改用直链: ${downloadUrl}`);
+                    const response = await this.axiosInstance.get(downloadUrl, {
+                        responseType: 'arraybuffer',
+                        headers: { 'Authorization': this.token },
+                        timeout: 30000
+                    });
+                    buffer = Buffer.from(response.data);
+                }
+
+                const detected = jschardet.detect(buffer);
+                const encoding = detected.encoding || 'utf-8';
+                return iconv.decode(buffer, encoding);
+            }
+
+            this.logger.error(`读取文件失败，Alist 返回值异常`, { path: fullPath, response: result });
+            throw new Error('文件内容获取失败或文件不存在');
+        } catch (err) {
+            const isDbLocked = err.message?.includes('database is locked');
+            const isNetworkError = err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND';
+            const shouldRetry = retryCount < maxRetries && (isDbLocked || isNetworkError || err.response?.status === 500);
+            
+            if (shouldRetry) {
+                const delayMs = Math.min(1000 * Math.pow(2, retryCount), 15000);
+                this.logger.warn(`读取文件 ${fullPath} ${isDbLocked ? '数据库锁定' : '网络错误'},${delayMs}ms 后进行第 ${retryCount + 1} 次重试`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return this.readFile(filePath, retryCount + 1, maxRetries);
+            }
+            
+            throw err;
         }
-
-        const detected = jschardet.detect(buffer);
-        const encoding = detected.encoding || 'utf-8';
-        return iconv.decode(buffer, encoding);
     }
-
-    this.logger.error(`读取文件失败，Alist 返回值异常`, { path: fullPath, response: result });
-    throw new Error('文件内容获取失败或文件不存在');
-}
 
     async downloadFile(filePath, res) {
         const fullPath = this._getFullPath(filePath);
@@ -1637,6 +1669,38 @@ app.post('/api/update/set_version', asyncHandler(async (req, res) => {
     }
 }));
 
+// 版本搜索接口 - 实时更新搜索记录到数据库
+app.post('/api/update/search_version', asyncHandler(async (req, res) => {
+    try {
+        const { keyword } = req.body;
+        if (typeof keyword !== 'string') {
+            return res.status(400).json({ code: 400, message: '搜索关键词必须是字符串' });
+        }
+
+        // 创建搜索历史表（如果不存在）
+        await executeWithRetry(`
+            CREATE TABLE IF NOT EXISTS version_search_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                keyword VARCHAR(255) NOT NULL,
+                search_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_keyword (keyword),
+                INDEX idx_search_time (search_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `, []);
+
+        // 记录搜索操作
+        await executeWithRetry(
+            'INSERT INTO version_search_history (keyword) VALUES (?)',
+            [keyword]
+        );
+
+        logger.debug(`版本搜索记录: "${keyword}"`);
+        res.json({ code: 200, message: '搜索记录已保存' });
+    } catch (error) {
+        logger.error('版本搜索记录失败', { error: error.message });
+        res.status(500).json({ code: 500, message: '搜索记录失败' });
+    }
+}));
 
 
 // 版本号比较函数
@@ -1653,14 +1717,45 @@ function compareVersions(v1, v2) {
 
 app.get('/api/logs', asyncHandler(async (req, res) => {
     // 始终强制刷新，实时获取最新文件列表
-    const allFiles = await alistClient.listFiles(alistClient.basePath, true);
+    let allFiles = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            allFiles = await alistClient.listFiles(alistClient.basePath, true);
+            break;
+        } catch (error) {
+            if (attempt < 2) {
+                logger.warn(`获取文件列表失败 (${attempt + 1}/3)，${(attempt + 1) * 1000}ms 后重试`);
+                await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+            } else {
+                logger.error(`获取文件列表失败，已达最大重试次数`, { error: error.message });
+                return res.status(500).json({ error: '文件列表获取失败，请稍后重试' });
+            }
+        }
+    }
     res.json(allFiles);
 }));
 
 app.get('/api/clients/:clientId/logs', asyncHandler(async (req, res) => {
     const clientInfo = getClientInfoById(req.params.clientId);
     if (!clientInfo.exists) return res.status(404).json({ error: '客户端不存在' });
-    const allFiles = await alistClient.listFiles(clientInfo.logDir, true);
+    
+    // 获取客户端日志列表 
+    let allFiles = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            allFiles = await alistClient.listFiles(clientInfo.logDir, true);
+            break;
+        } catch (error) {
+            if (attempt < 2) {
+                logger.warn(`获取客户端 ${req.params.clientId} 文件列表失败 (${attempt + 1}/3)，${(attempt + 1) * 1000}ms 后重试`);
+                await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+            } else {
+                logger.error(`获取客户端 ${req.params.clientId} 文件列表失败，已达最大重试次数`, { error: error.message });
+                return res.status(500).json({ error: '文件列表获取失败，请稍后重试' });
+            }
+        }
+    }
+    
     const clientFiles = allFiles.filter(file => file.filename.startsWith(clientInfo.ip + '_'));
     res.json(clientFiles);
 }));
@@ -2092,7 +2187,24 @@ function extractPasswordsFromLog(content, filename) {
 
 app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
     try {
-        const allFiles = await alistClient.listFiles(alistClient.basePath, true);
+        let allFiles = [];
+        // 获取日志文件列表
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                allFiles = await alistClient.listFiles(alistClient.basePath, true);
+                if (allFiles.length > 0) break;
+            } catch (error) {
+                if (attempt < 2) {
+                    const delayMs = 1000 * (attempt + 1);
+                    logger.warn(`获取文件列表失败 (${attempt + 1}/3)，${delayMs}ms 后重试:`, { error: error.message });
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                } else {
+                    logger.error(`获取文件列表失败，已达最大重试次数:`, { error: error.message });
+                    throw error;
+                }
+            }
+        }
+        
         const logFiles = allFiles.filter(file => file.filename.endsWith('.log'));
         
         if (logFiles.length === 0) return res.json({ success: true, count: 0 });
@@ -2144,13 +2256,24 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
 
     const extractLimit = pLimit(CONFIG.extractConcurrency);
     const extractTasks = filesToProcess.map(file => extractLimit(async () => {
-        try {
-            const content = await alistClient.readFile(`${alistClient.basePath}/${file.filename}`);
-            return extractPasswordsFromLog(content, file.filename);
-        } catch (error) {
-            logger.warn(`读取日志文件失败: ${file.filename}`, { error: error.message });
-            return [];
+        let lastError = null;
+        // 文件级别重试（最多3次）
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const content = await alistClient.readFile(`${alistClient.basePath}/${file.filename}`);
+                return extractPasswordsFromLog(content, file.filename);
+            } catch (error) {
+                lastError = error;
+                if (attempt < 2) {
+                    const delayMs = 1000 * (attempt + 1);  // 1秒，2秒
+                    logger.warn(`读取日志文件失败 (${attempt + 1}/3): ${file.filename}，${delayMs}ms 后重试`);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                } else {
+                    logger.warn(`读取日志文件失败，已达最大重试次数: ${file.filename}`, { error: error.message });
+                }
+            }
         }
+        return [];
     }));
 
     const results = await Promise.allSettled(extractTasks);
@@ -2204,7 +2327,13 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         extractionCache.fileMTimes.set(filename, state.mtime);
     }
 
-    res.json({ success: true, count: uniquePasswords.length, passwords: uniquePasswords });
+    // 为返回的密码数组添加序号
+    const passwordsWithIndex = uniquePasswords.map((item, index) => ({
+        ...item,
+        index: index + 1
+    }));
+
+    res.json({ success: true, count: uniquePasswords.length, passwords: passwordsWithIndex });
     } catch (error) {
         logger.error('提取密码失败', { error: error.message, stack: error.stack });
         res.status(500).json({ success: false, error: '提取密码失败: ' + error.message });

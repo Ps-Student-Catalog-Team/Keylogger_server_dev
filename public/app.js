@@ -55,6 +55,27 @@ function normalizePassword(value) {
     return normalized;
 }
 
+/**
+ * 模糊匹配函数：支持不连续匹配
+ * 例如: fuzzyMatch('密码', '这是一个密码') 返回 true
+ * 例如: fuzzyMatch('ab', 'aXbXc') 返回 true
+ * @param {string} keyword - 搜索关键词
+ * @param {string} text - 被搜索的文本
+ * @returns {boolean} 是否匹配
+ */
+function fuzzyMatch(keyword, text) {
+    if (!keyword) return true;
+    keyword = keyword.toLowerCase();
+    text = text.toLowerCase();
+    let keywordIndex = 0;
+    for (let i = 0; i < text.length && keywordIndex < keyword.length; i++) {
+        if (text[i] === keyword[keywordIndex]) {
+            keywordIndex++;
+        }
+    }
+    return keywordIndex === keyword.length;
+}
+
 function escapeHtml(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -1072,7 +1093,8 @@ document.getElementById('logSearch')?.addEventListener('input', (e) => {
     const rows = dom.logsTable.querySelectorAll('tr');
     rows.forEach(row => {
         const text = row.textContent.toLowerCase();
-        row.style.display = text.includes(keyword) ? '' : 'none';
+        // 使用模糊匹配替代精确匹配
+        row.style.display = fuzzyMatch(keyword, text) ? '' : 'none';
     });
 });
 
@@ -1081,7 +1103,8 @@ document.getElementById('blacklistSearch')?.addEventListener('input', (e) => {
     const rows = document.querySelectorAll('#blacklistTable tr');
     rows.forEach(row => {
         const text = row.textContent.toLowerCase();
-        row.style.display = text.includes(keyword) ? '' : 'none';
+        // 使用模糊匹配替代精确匹配
+        row.style.display = fuzzyMatch(keyword, text) ? '' : 'none';
     });
 });
 
@@ -1357,8 +1380,8 @@ async function blacklistExtractedPassword(password) {
         let filtered = currentExtractedPasswords;
         if (extractedSearchKeyword) {
             filtered = filtered.filter(item =>
-                (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
-                (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+                fuzzyMatch(extractedSearchKeyword, item.password || '') ||
+                fuzzyMatch(extractedSearchKeyword, item.file || '')
             );
         }
         const total = filtered.length;
@@ -1391,14 +1414,14 @@ window.addEventListener('beforeunload', () => {
 function renderExtractedPage() {
     const listEl = document.getElementById('extractList');
     const statsEl = document.getElementById('extractStats');
-    const pagerEl = document.getElementById('extractPager'); // 需在 HTML 中添加
+    const pagerEl = document.getElementById('extractPager');
 
     // 1. 根据搜索关键词过滤全量数据
     let filtered = currentExtractedPasswords;
     if (extractedSearchKeyword) {
         filtered = filtered.filter(item =>
-            (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
-            (item.file && item.file.toLowerCase().includes(extractedSearchKeyword))
+            fuzzyMatch(extractedSearchKeyword, item.password || '') ||
+            fuzzyMatch(extractedSearchKeyword, item.file || '')
         );
     }
 
@@ -1520,8 +1543,8 @@ function renderExtractedPage() {
 function changeExtractedPage(delta) {
     const total = currentExtractedPasswords.filter(item => {
         if (!extractedSearchKeyword) return true;
-        return (item.password && item.password.toLowerCase().includes(extractedSearchKeyword)) ||
-               (item.file && item.file.toLowerCase().includes(extractedSearchKeyword));
+        return fuzzyMatch(extractedSearchKeyword, item.password || '') ||
+               fuzzyMatch(extractedSearchKeyword, item.file || '');
     }).length;
     const maxPage = Math.ceil(total / EXTRACT_PAGE_SIZE) || 1;
     const newPage = extractedPage + delta;
@@ -1534,7 +1557,7 @@ function changeExtractedPage(delta) {
 // 退出登录
 function logout() {
     if (confirm('确定要退出登录吗？')) {
-        // 清除本地存储的认证状态（如果有）
+        // 清除本地存储的认证状态
         localStorage.clear();
         sessionStorage.clear();
         // 跳转到登出接口，服务端会清除 Cookie 并重定向到登录页
@@ -1653,6 +1676,7 @@ setInterval(updateCurrentTime, 1000);
 // 版本管理状态
 let versionLoadingState = false;
 let versionRefreshInterval = null;
+let allVersions = [];  // 存储所有版本数据
 
 // 加载版本列表
 async function loadVersions() {
@@ -1675,6 +1699,7 @@ async function loadVersions() {
         const data = await response.json();
         
         if (data.code === 200) {
+            allVersions = data.data.versions;  // 保存所有版本数据
             renderVersionsTable(data.data.versions);
             showToast('版本列表已刷新', 'success');
         } else {
@@ -1690,6 +1715,38 @@ async function loadVersions() {
             btn.innerHTML = originalHTML;
         }
     }
+}
+
+// 搜索/过滤版本
+async function filterVersions() {
+    const searchInput = document.getElementById('versionSearch');
+    if (!searchInput) return;
+    
+    const keyword = searchInput.value.toLowerCase().trim();
+    
+    // 实时更新数据库（记录搜索操作）
+    try {
+        await fetch('/api/update/search_version', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyword })
+        });
+    } catch (error) {
+        console.warn('版本搜索记录失败:', error);
+    }
+    
+    // 前端过滤显示
+    if (!keyword) {
+        renderVersionsTable(allVersions);
+        return;
+    }
+    
+    const filtered = allVersions.filter(version =>
+        fuzzyMatch(keyword, version.version) ||
+        fuzzyMatch(keyword, version.filename)
+    );
+    
+    renderVersionsTable(filtered);
 }
 
 // 渲染版本表格
