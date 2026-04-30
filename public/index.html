@@ -1428,7 +1428,20 @@
         </div>
     </div>
 
-
+    <!-- 通用确认模态框 -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 id="confirmTitle">确认操作</h3>
+                <button class="close-btn" onclick="hideModal('confirmModal')">&times;</button>
+            </div>
+            <p id="confirmMessage" style="margin-bottom: 1.5rem;"></p>
+            <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+                <button class="btn btn-secondary" onclick="hideModal('confirmModal')">取消</button>
+                <button class="btn btn-primary" id="confirmOkBtn">确认</button>
+            </div>
+        </div>
+    </div>
 
     <!-- 日志查看模态框 -->
     <div class="modal" id="logModal">

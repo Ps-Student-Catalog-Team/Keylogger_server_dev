@@ -129,6 +129,25 @@ document.querySelectorAll('.nav-item').forEach(item => {
     });
 });
 
+// 通用确认模态框
+let confirmCallback = null;
+
+function showConfirmModal(title, message, onConfirm) {
+    document.getElementById('confirmTitle').textContent = title || '确认操作';
+    document.getElementById('confirmMessage').textContent = message || '确定执行此操作吗？';
+    document.getElementById('confirmModal').classList.add('show');
+    confirmCallback = onConfirm;
+}
+
+// 确认按钮点击事件
+document.getElementById('confirmOkBtn').addEventListener('click', () => {
+    hideModal('confirmModal');
+    if (typeof confirmCallback === 'function') {
+        confirmCallback();
+        confirmCallback = null;
+    }
+});
+
 // 初始化 WebSocket
 function connectWebSocket() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -473,38 +492,37 @@ async function getLogsInfo() {
 }
 
 // 删除指定日志
-async function deleteClientLog(filename) {
+function deleteClientLog(filename) {
     if (!currentClientId) {
         showToast('请先选择客户端', 'error');
         return;
     }
-    
-    if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) {
-        return;
-    }
-    
-    try {
-        showToast('正在删除日志文件...', 'success');
-        const response = await fetch(`/api/clients/${currentClientId}/logs/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: filename })
-        });
-        
-        const result = await response.json();
-        if (response.ok && result.success) {
-            showToast('已发送删除日志文件请求', 'success');
-            // 刷新日志列表
-            if (document.getElementById('clientModal').classList.contains('show')) {
-                loadClientLogs(currentClientId);
+    showConfirmModal(
+        '删除日志文件',
+        `确定要删除日志文件 "${filename}" 吗？此操作不可恢复！`,
+        async () => {
+            try {
+                showToast('正在删除日志文件...', 'success');
+                const response = await fetch(`/api/clients/${currentClientId}/logs/delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file: filename })
+                });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    showToast('已发送删除日志文件请求', 'success');
+                    if (document.getElementById('clientModal').classList.contains('show')) {
+                        loadClientLogs(currentClientId);
+                    }
+                } else {
+                    showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
+                }
+            } catch (e) {
+                console.error('删除日志文件失败:', e);
+                showToast('删除请求失败', 'error');
             }
-        } else {
-            showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
         }
-    } catch (e) {
-        console.error('删除日志文件失败:', e);
-        showToast('删除请求失败', 'error');
-    }
+    );
 }
 
 // 暂停录制
@@ -607,28 +625,28 @@ function setServer() {
 
 // 断开客户端连接
 function disconnectClient(clientId) {
-    if (!confirm('确定断开该客户端连接吗？')) return;
-    ws.send(JSON.stringify({
-        type: 'disconnect_client',
-        clientId: clientId
-    }));
+    showConfirmModal(
+        '断开连接',
+        '确定断开该客户端连接吗？',
+        () => {
+            ws.send(JSON.stringify({ type: 'disconnect_client', clientId }));
+        }
+    );
 }
 
 // 删除客户端
 function deleteClient(clientId) {
-    if (!confirm('确定要删除该客户端吗？此操作会从数据库中永久移除记录。')) return;
-    ws.send(JSON.stringify({
-        type: 'delete_client',
-        clientId: clientId
-    }));
-    if (currentClientId === clientId) {
-        hideModal('clientModal');
-    }
+    showConfirmModal(
+        '删除客户端',
+        '确定要删除该客户端吗？此操作会从数据库中永久移除记录。',
+        () => {
+            ws.send(JSON.stringify({ type: 'delete_client', clientId }));
+            if (currentClientId === clientId) {
+                hideModal('clientModal');
+            }
+        }
+    );
 }
-
-// 手动连接（模态框调用）
-// 文件: app.js
-// 替换原有的 manualConnect 函数
 
 function manualConnect() {
     const ip = document.getElementById('connectIp').value.trim();
@@ -939,31 +957,48 @@ async function fetchLogContent(clientId, filename) {
 
 // 下载日志
 function downloadLog(clientId, filename) {
-    window.open(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}/download`, '_blank');
+    showConfirmModal(
+        '下载日志文件',
+        `确定要下载文件 "${filename}" 吗？`,
+        () => {
+            // 使用隐藏的 a 标签触发下载，保持当前页不变
+            const link = document.createElement('a');
+            link.href = `/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}/download`;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showToast('开始下载', 'success');
+        }
+    );
 }
 
 // 删除日志
-async function deleteLog(clientId, filename) {
-    if (!confirm(`确定要删除日志文件 ${filename} 吗？此操作不可恢复！`)) return;
-    try {
-        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}`, {
-            method: 'DELETE'
-        });
-        const result = await response.json();
-        if (response.ok) {
-            showToast(`日志 ${filename} 已删除`, 'success');
-            // 立即刷新相关列表
-            refreshLogs();
-            if (currentClientId === clientId && document.getElementById('clientModal').classList.contains('show')) {
-                loadClientLogs(clientId);
+function deleteLog(clientId, filename) {
+    showConfirmModal(
+        '删除日志文件',
+        `确定要删除日志文件 "${filename}" 吗？此操作不可恢复！`,
+        async () => {
+            try {
+                const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    showToast(`日志 ${filename} 已删除`, 'success');
+                    refreshLogs();
+                    if (currentClientId === clientId && document.getElementById('clientModal').classList.contains('show')) {
+                        loadClientLogs(clientId);
+                    }
+                } else {
+                    showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
+                }
+            } catch (e) {
+                console.error('删除日志失败:', e);
+                showToast('删除请求失败', 'error');
             }
-        } else {
-            showToast(`删除失败: ${result.error || '未知错误'}`, 'error');
         }
-    } catch (e) {
-        console.error('删除日志失败:', e);
-        showToast('删除请求失败', 'error');
-    }
+    );
 }
 
 // 格式化文件大小
@@ -1046,26 +1081,24 @@ function changeBlacklistPage(delta) {
 }
 
 async function deleteBlacklistEntry(id) {
-    if (!confirm('确认删除该屏蔽密码？此操作不可恢复。')) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/blacklist/${id}`, {
-            method: 'DELETE'
-        });
-        const result = await response.json();
-
-        if (!response.ok || !result.success) {
-            throw new Error(result.error || '删除失败');
+    showConfirmModal(
+        '取消屏蔽',
+        '确认删除该屏蔽密码？此操作不可恢复。',
+        async () => {
+            try {
+                const response = await fetch(`/api/blacklist/${id}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || '删除失败');
+                }
+                showToast('已删除黑名单项', 'success');
+                loadBlacklist();
+            } catch (e) {
+                console.error('删除黑名单失败:', e);
+                showToast(e.message || '删除黑名单失败', 'error');
+            }
         }
-
-        showToast('已删除黑名单项', 'success');
-        loadBlacklist();
-    } catch (e) {
-        console.error('删除黑名单失败:', e);
-        showToast(e.message || '删除黑名单失败', 'error');
-    }
+    );
 }
 
 // Toast 提示
@@ -1556,15 +1589,16 @@ function changeExtractedPage(delta) {
 
 // 退出登录
 function logout() {
-    if (confirm('确定要退出登录吗？')) {
-        // 清除本地存储的认证状态
-        localStorage.clear();
-        sessionStorage.clear();
-        // 跳转到登出接口，服务端会清除 Cookie 并重定向到登录页
-        window.location.href = '/logout';
-    }
+    showConfirmModal(
+        '退出登录',
+        '确定要退出登录吗？',
+        () => {
+            localStorage.clear();
+            sessionStorage.clear();
+            window.location.href = '/logout';
+        }
+    );
 }
-
 // 更新当前时间
 function updateCurrentTime() {
     const now = new Date();
@@ -1802,50 +1836,51 @@ function renderVersionsTable(versions) {
 }
 
 // 前端调用函数
+// 取消激活版本
 async function deactivateVersion() {
-    if (!confirm('确定要取消当前激活的版本吗？')) return;
-    try {
-        const response = await fetch('/api/update/deactivate', { method: 'POST' });
-        const data = await response.json();
-        if (data.code === 200) {
-            showToast('已取消激活', 'success');
-            loadVersions();
-        } else {
-            showToast(data.message || '取消激活失败', 'error');
+    showConfirmModal(
+        '取消激活',
+        '确定要取消当前激活的版本吗？',
+        async () => {
+            try {
+                const response = await fetch('/api/update/deactivate', { method: 'POST' });
+                const data = await response.json();
+                if (data.code === 200) {
+                    showToast('已取消激活', 'success');
+                    loadVersions();
+                } else {
+                    showToast(data.message || '取消激活失败', 'error');
+                }
+            } catch (error) {
+                showToast('取消激活请求失败', 'error');
+            }
         }
-    } catch (error) {
-        showToast('取消激活请求失败', 'error');
-    }
+    );
 }
 
 // 设置激活版本
 async function setActiveVersion(version) {
-    if (!confirm(`确定要将版本 ${version} 设置为激活版本吗？`)) {
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/update/set_version', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                version,
-                force_update: false
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (data.code === 200) {
-            showToast(`版本 ${version} 已设置为激活状态`, 'success');
-            loadVersions();
-        } else {
-            showToast(data.message || '设置激活版本失败', 'error');
+    showConfirmModal(
+        '设置激活版本',
+        `确定要将版本 ${version} 设置为激活版本吗？`,
+        async () => {
+            try {
+                const response = await fetch('/api/update/set_version', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ version, force_update: false })
+                });
+                const data = await response.json();
+                if (data.code === 200) {
+                    showToast(`版本 ${version} 已设置为激活状态`, 'success');
+                    loadVersions();
+                } else {
+                    showToast(data.message || '设置激活版本失败', 'error');
+                }
+            } catch (error) {
+                console.error('设置激活版本失败:', error);
+                showToast('设置激活版本失败：' + error.message, 'error');
+            }
         }
-    } catch (error) {
-        console.error('设置激活版本失败:', error);
-        showToast('设置激活版本失败：' + error.message, 'error');
-    }
+    );
 }
