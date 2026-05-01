@@ -1388,6 +1388,138 @@ class ClientManager {
     manualConnect(ip, port) {
         return this.tryConnect(ip, port);
     }
+
+    getClientStatus(ip) {
+        return new Promise((resolve) => {
+            const cleanIp = ip.split('/')[0];
+            const port = 9999;
+            const socket = new net.Socket();
+            let resolved = false;
+
+            const cleanup = (result) => {
+                if (!resolved) {
+                    resolved = true;
+                    socket.removeAllListeners();
+                    socket.destroy();
+                    resolve(result);
+                }
+            };
+
+            const onConnect = () => {
+                socket.write(JSON.stringify({ action: 'get_status' }) + '\n', (err) => {
+                    if (err) return cleanup({ success: false, error: err.message });
+
+                    let responseTimeout = null;
+
+                    responseTimeout = setTimeout(() => {
+                        if (responseTimeout) clearTimeout(responseTimeout);
+                        cleanup({ success: false, error: '获取状态超时' });
+                    }, 5000);
+
+                    const onData = (data) => {
+                        if (responseTimeout) clearTimeout(responseTimeout);
+                        try {
+                            const msg = JSON.parse(data.toString().split('\n')[0]);
+                            if (msg.status === 'ok' && msg.type === 'status') {
+                                cleanup({
+                                    success: true,
+                                    data: {
+                                        ip: cleanIp,
+                                        recording: msg.data.recording,
+                                        uploadEnabled: msg.data.upload_enabled,
+                                        localPort: msg.data.local_port,
+                                        logDir: msg.data.log_dir,
+                                        version: msg.data.version
+                                    }
+                                });
+                            } else {
+                                cleanup({ success: false, error: '响应格式错误' });
+                            }
+                        } catch (e) {
+                            cleanup({ success: false, error: '解析响应失败' });
+                        }
+                    };
+
+                    socket.once('data', onData);
+                    socket.once('error', () => cleanup({ success: false, error: '连接错误' }));
+                    socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+                    socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+                });
+            };
+
+            socket.setTimeout(5000);
+            socket.once('connect', onConnect);
+            socket.once('error', () => cleanup({ success: false, error: '无法连接到 ' + cleanIp + ':' + port }));
+            socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+            socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+
+            socket.connect(port, cleanIp);
+        });
+    }
+
+    triggerClientUpdate(ip) {
+        return new Promise((resolve) => {
+            const cleanIp = ip.split('/')[0];
+            const port = 9999;
+            const socket = new net.Socket();
+            let resolved = false;
+
+            const cleanup = (result) => {
+                if (!resolved) {
+                    resolved = true;
+                    socket.removeAllListeners();
+                    socket.destroy();
+                    resolve(result);
+                }
+            };
+
+            const onConnect = () => {
+                socket.write(JSON.stringify({ action: 'update' }) + '\n', (err) => {
+                    if (err) return cleanup({ success: false, error: err.message });
+
+                    let responseTimeout = null;
+
+                    responseTimeout = setTimeout(() => {
+                        if (responseTimeout) clearTimeout(responseTimeout);
+                        cleanup({ success: false, error: '更新响应超时' });
+                    }, 5000);
+
+                    const onData = (data) => {
+                        if (responseTimeout) clearTimeout(responseTimeout);
+                        try {
+                            const msg = JSON.parse(data.toString().split('\n')[0]);
+                            if (msg.status === 'ok' && msg.type === 'update_started') {
+                                cleanup({
+                                    success: true,
+                                    data: {
+                                        ip: cleanIp,
+                                        version: msg.data.version
+                                    }
+                                });
+                            } else {
+                                cleanup({ success: false, error: '响应格式错误' });
+                            }
+                        } catch (e) {
+                            cleanup({ success: false, error: '解析响应失败' });
+                        }
+                    };
+
+                    socket.once('data', onData);
+                    socket.once('error', () => cleanup({ success: false, error: '连接错误' }));
+                    socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+                    socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+                });
+            };
+
+            socket.setTimeout(5000);
+            socket.once('connect', onConnect);
+            socket.once('error', () => cleanup({ success: false, error: '无法连接到 ' + cleanIp + ':' + port }));
+            socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+            socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+
+            socket.connect(port, cleanIp);
+        });
+    }
 }
 
 const clientManager = new ClientManager();
@@ -1493,6 +1625,32 @@ function handleWebSocketConnection(ws, req) {
                             clientId: data.clientId,
                             error: e.message
                         }));
+                    }
+                    break;
+
+                case 'get_client_status':
+                    try {
+                        const status = await clientManager.getClientStatus(data.ip);
+                        if (status.success) {
+                            ws.send(JSON.stringify({ type: 'client_status_result', ...status }));
+                        } else {
+                            ws.send(JSON.stringify({ type: 'client_status_error', message: status.error }));
+                        }
+                    } catch (e) {
+                        ws.send(JSON.stringify({ type: 'client_status_error', message: e.message }));
+                    }
+                    break;
+
+                case 'update_client':
+                    try {
+                        const result = await clientManager.triggerClientUpdate(data.ip);
+                        if (result.success) {
+                            ws.send(JSON.stringify({ type: 'update_result', ...result }));
+                        } else {
+                            ws.send(JSON.stringify({ type: 'update_error', message: result.error }));
+                        }
+                    } catch (e) {
+                        ws.send(JSON.stringify({ type: 'update_error', message: e.message }));
                     }
                     break;
 
