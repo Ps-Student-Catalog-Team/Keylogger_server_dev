@@ -1450,6 +1450,13 @@
                     </div>
                 </div>
                 <div class="form-group">
+                    <label>客户端更新</label>
+                    <div class="action-btns">
+                        <button class="btn btn-primary" onclick="getClientStatus()">获取版本</button>
+                        <button class="btn btn-warning" onclick="triggerClientUpdate()">触发更新</button>
+                    </div>
+                </div>
+                <div class="form-group">
                     <label>日志管理</label>
                     <div class="action-btns">
                         <button class="btn btn-danger" onclick="deleteClientLog(prompt('请输入要删除的日志文件名:'))">删除指定日志</button>

@@ -337,9 +337,38 @@ function handleWebSocketMessage(data) {
                 showToast('删除失败: ' + data.error, 'error');
             }
             break;
-        
-            case 'client_deleted':
-                removeClientFromList(data.clientId);
+
+        case 'client_status_result':
+            if (data.success && data.data) {
+                const info = data.data;
+                let statusHtml = `
+                    <p><strong>版本:</strong> ${escapeHtml(info.version || '未知')}</p>
+                    <p><strong>录制状态:</strong> ${info.recording ? '录制中' : '已暂停'}</p>
+                    <p><strong>上传状态:</strong> ${info.uploadEnabled ? '已启用' : '未启用'}</p>
+                    <p><strong>本地端口:</strong> ${info.localPort || '未知'}</p>
+                    <p><strong>日志目录:</strong> ${escapeHtml(info.logDir || '未知')}</p>
+                `;
+                document.getElementById('clientInfo').innerHTML = statusHtml;
+                showToast(`客户端版本: ${info.version}`, 'success');
+            } else {
+                showToast('获取客户端状态失败', 'error');
+            }
+            break;
+
+        case 'client_status_error':
+            showToast('获取客户端状态失败: ' + data.message, 'error');
+            break;
+
+        case 'update_result':
+            if (data.success && data.data) {
+                showToast(`更新已触发，目标版本: ${data.data.version}`, 'success');
+            } else {
+                showToast('触发更新失败', 'error');
+            }
+            break;
+
+        case 'update_error':
+            showToast('触发更新失败: ' + data.message, 'error');
             break;
 
         case 'error':
@@ -493,6 +522,48 @@ async function getLogsInfo() {
         console.error('获取日志文件信息失败:', e);
         showToast('获取请求失败', 'error');
     }
+}
+
+// 获取客户端版本状态
+function getClientStatus() {
+    if (!currentClientId) {
+        showToast('请先选择客户端', 'error');
+        return;
+    }
+    const client = clients.find(c => c.id === currentClientId);
+    if (!client) {
+        showToast('客户端不存在', 'error');
+        return;
+    }
+    showToast('正在获取客户端状态...', 'info');
+    ws.send(JSON.stringify({
+        type: 'get_client_status',
+        ip: client.ip
+    }));
+}
+
+// 触发客户端更新
+function triggerClientUpdate() {
+    if (!currentClientId) {
+        showToast('请先选择客户端', 'error');
+        return;
+    }
+    const client = clients.find(c => c.id === currentClientId);
+    if (!client) {
+        showToast('客户端不存在', 'error');
+        return;
+    }
+    showConfirmModal(
+        '确认更新',
+        `确定要触发客户端 ${client.ip} 更新吗？`,
+        () => {
+            showToast('正在触发客户端更新...', 'info');
+            ws.send(JSON.stringify({
+                type: 'update_client',
+                ip: client.ip
+            }));
+        }
+    );
 }
 
 // 删除指定日志
