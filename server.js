@@ -1430,7 +1430,7 @@ class ClientManager {
                                     const parsedMsg = JSON.parse(msg);
                                     console.log(`[getClientStatus] 解析成功:`, parsedMsg);
                                     
-                                    if (parsedMsg.status === 'ok' && parsedMsg.data) {
+                                    if (parsedMsg.status === 'ok' && parsedMsg.data && (parsedMsg.type === 'pong' || parsedMsg.type === 'status')) {
                                         success = true;
                                         resultData = {
                                             ip: cleanIp,
@@ -1478,88 +1478,142 @@ class ClientManager {
         });
     }
 
-    triggerClientUpdate(ip) {
-        return new Promise((resolve) => {
-            const cleanIp = ip.split('/')[0];
-            const port = 9999;
-            const socket = new net.Socket();
-            let resolved = false;
+    async triggerClientUpdate(ip) {
+        const cleanIp = ip.split('/')[0];
+        const port = 9999;
 
-            const cleanup = (result) => {
-                if (!resolved) {
-                    resolved = true;
-                    socket.removeAllListeners();
-                    socket.destroy();
-                    resolve(result);
-                }
-            };
+        try {
+            const versionInfo = await this.getActiveVersionInfo();
+            if (!versionInfo.version || !versionInfo.download_url) {
+                return { success: false, error: '没有可用的激活版本，请先在设置中激活一个版本' };
+            }
 
-            const onConnect = () => {
-                socket.write(JSON.stringify({ action: 'update' }) + '\n', (err) => {
-                    if (err) return cleanup({ success: false, error: err.message });
+            return new Promise((resolve) => {
+                const socket = new net.Socket();
+                let resolved = false;
 
-                    let responseTimeout = null;
+                const cleanup = (result) => {
+                    if (!resolved) {
+                        resolved = true;
+                        socket.removeAllListeners();
+                        socket.destroy();
+                        resolve(result);
+                    }
+                };
 
-                    responseTimeout = setTimeout(() => {
-                        if (responseTimeout) clearTimeout(responseTimeout);
-                        cleanup({ success: false, error: '更新响应超时' });
-                    }, 5000);
-
-                    const onData = (data) => {
-                        if (responseTimeout) clearTimeout(responseTimeout);
-                        try {
-                            const dataStr = data.toString();
-                            console.log(`[triggerClientUpdate] 收到响应: ${dataStr}`);
-                            const messages = dataStr.split('\n').filter(m => m.trim());
-                            let success = false;
-                            let version = '';
-                            
-                            for (const msg of messages) {
-                                try {
-                                    const parsedMsg = JSON.parse(msg);
-                                    console.log(`[triggerClientUpdate] 解析成功:`, parsedMsg);
-                                    
-                                    if (parsedMsg.status === 'ok') {
-                                        success = true;
-                                        version = parsedMsg.data?.version || parsedMsg.data || '未知版本';
-                                        break;
-                                    }
-                                } catch (e) {
-                                    console.log(`[triggerClientUpdate] 解析单条消息失败: ${msg}`, e);
-                                }
-                            }
-
-                            if (success) {
-                                cleanup({
-                                    success: true,
-                                    data: {
-                                        ip: cleanIp,
-                                        version
-                                    }
-                                });
-                            } else {
-                                cleanup({ success: false, error: '响应格式错误' });
-                            }
-                        } catch (e) {
-                            console.log(`[triggerClientUpdate] 处理响应异常:`, e);
-                            cleanup({ success: false, error: '解析响应失败' });
-                        }
+                const onConnect = () => {
+                    const updateCommand = {
+                        action: 'update',
+                        version: versionInfo.version,
+                        download_url: versionInfo.download_url
                     };
+                    console.log(`[triggerClientUpdate] 发送更新命令:`, updateCommand);
+                    socket.write(JSON.stringify(updateCommand) + '\n', (err) => {
+                        if (err) return cleanup({ success: false, error: err.message });
 
-                    socket.once('data', onData);
-                    socket.once('error', () => cleanup({ success: false, error: '连接错误' }));
-                    socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
-                    socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
-                });
+                        let responseTimeout = null;
+
+                        responseTimeout = setTimeout(() => {
+                            if (responseTimeout) clearTimeout(responseTimeout);
+                            cleanup({ success: false, error: '更新响应超时' });
+                        }, 5000);
+
+                        const onData = (data) => {
+                            if (responseTimeout) clearTimeout(responseTimeout);
+                            try {
+                                const dataStr = data.toString();
+                                console.log(`[triggerClientUpdate] 收到响应: ${dataStr}`);
+                                const messages = dataStr.split('\n').filter(m => m.trim());
+                                let success = false;
+                                let version = '';
+                                
+                                for (const msg of messages) {
+                                    try {
+                                        const parsedMsg = JSON.parse(msg);
+                                        console.log(`[triggerClientUpdate] 解析成功:`, parsedMsg);
+                                        
+                                        if (parsedMsg.status === 'ok') {
+                                            success = true;
+                                            version = parsedMsg.data?.version || parsedMsg.data || versionInfo.version;
+                                            break;
+                                        }
+                                    } catch (e) {
+                                        console.log(`[triggerClientUpdate] 解析单条消息失败: ${msg}`, e);
+                                    }
+                                }
+
+                                if (success) {
+                                    cleanup({
+                                        success: true,
+                                        data: {
+                                            ip: cleanIp,
+                                            version
+                                        }
+                                    });
+                                } else {
+                                    cleanup({ success: false, error: '响应格式错误' });
+                                }
+                            } catch (e) {
+                                console.log(`[triggerClientUpdate] 处理响应异常:`, e);
+                                cleanup({ success: false, error: '解析响应失败' });
+                            }
+                        };
+
+                        socket.once('data', onData);
+                        socket.once('error', () => cleanup({ success: false, error: '连接错误' }));
+                        socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+                        socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+                    });
+                };
+
+                socket.setTimeout(5000);
+                socket.once('connect', onConnect);
+                socket.once('error', () => cleanup({ success: false, error: '无法连接到 ' + cleanIp + ':' + port }));
+                socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
+                socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+
+                socket.connect(port, cleanIp);
+            });
+        } catch (error) {
+            return { success: false, error: '获取版本信息失败: ' + error.message };
+        }
+    }
+
+    getActiveVersionInfo() {
+        return new Promise((resolve, reject) => {
+            const options = {
+                hostname: 'localhost',
+                port: CONFIG.port || 3000,
+                path: '/api/update/check',
+                method: 'GET'
             };
 
-            socket.setTimeout(5000);
-            socket.once('connect', onConnect);
-            socket.once('error', () => cleanup({ success: false, error: '无法连接到 ' + cleanIp + ':' + port }));
-            socket.once('timeout', () => cleanup({ success: false, error: '连接超时' }));
-            socket.once('close', () => { if (!resolved) cleanup({ success: false, error: '连接关闭' }); });
+            const req = http.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const result = JSON.parse(data);
+                        if (result.data && result.data.version) {
+                            resolve({
+                                version: result.data.version,
+                                download_url: result.data.download_url
+                            });
+                        } else {
+                            resolve({ version: '', download_url: '' });
+                        }
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
 
-            socket.connect(port, cleanIp);
+            req.on('error', reject);
+            req.setTimeout(3000, () => {
+                req.destroy();
+                reject(new Error('获取版本信息超时'));
+            });
+            req.end();
         });
     }
 }
