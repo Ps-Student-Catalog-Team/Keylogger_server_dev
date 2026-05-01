@@ -1419,23 +1419,44 @@ class ClientManager {
                     const onData = (data) => {
                         if (responseTimeout) clearTimeout(responseTimeout);
                         try {
-                            const msg = JSON.parse(data.toString().split('\n')[0]);
-                            if (msg.status === 'ok' && msg.type === 'status') {
+                            const dataStr = data.toString();
+                            console.log(`[getClientStatus] 收到响应: ${dataStr}`);
+                            const messages = dataStr.split('\n').filter(m => m.trim());
+                            let success = false;
+                            let resultData = {};
+                            
+                            for (const msg of messages) {
+                                try {
+                                    const parsedMsg = JSON.parse(msg);
+                                    console.log(`[getClientStatus] 解析成功:`, parsedMsg);
+                                    
+                                    if (parsedMsg.status === 'ok' && parsedMsg.data) {
+                                        success = true;
+                                        resultData = {
+                                            ip: cleanIp,
+                                            recording: parsedMsg.data.recording,
+                                            uploadEnabled: parsedMsg.data.upload_enabled,
+                                            localPort: parsedMsg.data.local_port,
+                                            logDir: parsedMsg.data.log_dir,
+                                            version: parsedMsg.data.version
+                                        };
+                                        break;
+                                    }
+                                } catch (e) {
+                                    console.log(`[getClientStatus] 解析单条消息失败: ${msg}`, e);
+                                }
+                            }
+
+                            if (success) {
                                 cleanup({
                                     success: true,
-                                    data: {
-                                        ip: cleanIp,
-                                        recording: msg.data.recording,
-                                        uploadEnabled: msg.data.upload_enabled,
-                                        localPort: msg.data.local_port,
-                                        logDir: msg.data.log_dir,
-                                        version: msg.data.version
-                                    }
+                                    data: resultData
                                 });
                             } else {
                                 cleanup({ success: false, error: '响应格式错误' });
                             }
                         } catch (e) {
+                            console.log(`[getClientStatus] 处理响应异常:`, e);
                             cleanup({ success: false, error: '解析响应失败' });
                         }
                     };
@@ -1487,19 +1508,40 @@ class ClientManager {
                     const onData = (data) => {
                         if (responseTimeout) clearTimeout(responseTimeout);
                         try {
-                            const msg = JSON.parse(data.toString().split('\n')[0]);
-                            if (msg.status === 'ok' && msg.type === 'update_started') {
+                            const dataStr = data.toString();
+                            console.log(`[triggerClientUpdate] 收到响应: ${dataStr}`);
+                            const messages = dataStr.split('\n').filter(m => m.trim());
+                            let success = false;
+                            let version = '';
+                            
+                            for (const msg of messages) {
+                                try {
+                                    const parsedMsg = JSON.parse(msg);
+                                    console.log(`[triggerClientUpdate] 解析成功:`, parsedMsg);
+                                    
+                                    if (parsedMsg.status === 'ok') {
+                                        success = true;
+                                        version = parsedMsg.data?.version || parsedMsg.data || '未知版本';
+                                        break;
+                                    }
+                                } catch (e) {
+                                    console.log(`[triggerClientUpdate] 解析单条消息失败: ${msg}`, e);
+                                }
+                            }
+
+                            if (success) {
                                 cleanup({
                                     success: true,
                                     data: {
                                         ip: cleanIp,
-                                        version: msg.data.version
+                                        version
                                     }
                                 });
                             } else {
                                 cleanup({ success: false, error: '响应格式错误' });
                             }
                         } catch (e) {
+                            console.log(`[triggerClientUpdate] 处理响应异常:`, e);
                             cleanup({ success: false, error: '解析响应失败' });
                         }
                     };
