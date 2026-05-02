@@ -626,31 +626,46 @@ class AlistClient {
         return { success: true, filename };
     }
 
-    // server.js -> AlistClient 类
+    async deleteFile(filePath) {
+        const fullPath = this._getFullPath(filePath);
+        const dirPath = path.dirname(fullPath);
+        const name = path.basename(fullPath);
 
-async deleteFile(filePath) {
-    const fullPath = this._getFullPath(filePath);
-    try {
-        await this._request('POST', '/api/fs/remove', {
-            names: [path.basename(fullPath)],
-            path: path.dirname(fullPath) // 父目录
-        });
-    } catch (firstTryError) {
-        // 如果常规删除失败，尝试另一种 Alist 常见写法：DELETE 方法
-        this.logger.warn(`常规删除失败 (${fullPath})，尝试备用方式...`);
+        // 优先使用 dir 字段（兼容最新版 Alist）
         try {
-            await this._request('DELETE', `/api/fs/remove?path=${encodeURIComponent(fullPath)}`);
-        } catch (secondTryError) {
-            this.logger.error(`备用删除也失败了: ${fullPath}`, { error: secondTryError.message });
-            throw secondTryError; // 两次都失败，抛出异常
+            const result = await this._request('POST', '/api/fs/remove', {
+                dir: dirPath,
+                names: [name]
+            });
+            if (result && result.code !== 200) {
+                throw new Error(`Alist 返回错误: ${result.message || '未知'}`);
+            }
+        } catch (firstError) {
+            this.logger.warn(`首选删除失败 (${fullPath})，尝试备选 path 方式`);
+            try {
+                const result = await this._request('POST', '/api/fs/remove', {
+                    path: dirPath,
+                    names: [name]
+                });
+                if (result && result.code !== 200) {
+                    throw new Error(`Alist 返回错误: ${result.message || '未知'}`);
+                }
+            } catch (secondError) {
+                // 最终尝试 DELETE 方法
+                this.logger.warn(`path 方式也失败，尝试 DELETE 接口`);
+                const delResult = await this._request('DELETE', `/api/fs/remove?path=${encodeURIComponent(fullPath)}`);
+                if (delResult && delResult.code !== 200) {
+                    this.logger.error(`所有删除方式均失败: ${fullPath}`, { error: delResult.message });
+                    throw new Error(`删除文件失败: ${delResult.message || '未知错误'}`);
+                }
+            }
         }
+
+        // 清理缓存
+        this._invalidateCache(this._getCacheKey('list', dirPath));
+        this.logger.debug(`文件已删除: ${fullPath}`);
+        return { success: true };
     }
-    // 让缓存失效
-    const dir = path.dirname(fullPath);
-    this._invalidateCache(this._getCacheKey('list', dir));
-    this.logger.debug(`文件已删除: ${fullPath}`);
-    return { success: true };
-}
 }
 
 const alistClient = new AlistClient(CONFIG.alist);
@@ -1854,6 +1869,19 @@ async function cleanSelectedLogs(filenames) {
 
     logger.info(`[清理选中] 完成：删除 ${totalClean} 个，保存 ${totalSaved} 条密码`);
     return { results, totalClean, totalSaved };
+}
+
+// 一键清理所有过期日志
+async function cleanExpiredLogs() {
+    const expiredFiles = await scanExpiredLogs();          // 扫描过期文件列表
+    if (expiredFiles.length === 0) {
+        logger.info('[一键清理] 没有过期日志需要清理');
+        return { totalClean: 0, totalSaved: 0 };
+    }
+    const filenames = expiredFiles.map(f => f.filename);   // 提取文件名
+    const result = await cleanSelectedLogs(filenames);     // 复用批量清理逻辑
+    logger.info(`[一键清理] 完成，删除 ${result.totalClean} 个文件，保存 ${result.totalSaved} 条密码`);
+    return result;
 }
 
 // ========== HTTP API 路由 ==========
