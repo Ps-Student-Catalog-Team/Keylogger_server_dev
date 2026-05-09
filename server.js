@@ -31,6 +31,9 @@ let blacklistLastUpdate = 0; // 黑名单上次更新时间
 
 let blacklistLoading = false;
 
+// network.js
+const network = require('./public/network'); // 导入 network.js
+
 async function loadBlacklistCache() {
     const now = Date.now();
     if (now - blacklistLastUpdate < BLACKLIST_UPDATE_INTERVAL && blacklistCache.size > 0) {

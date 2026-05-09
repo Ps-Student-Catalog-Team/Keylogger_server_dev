@@ -1190,6 +1190,33 @@
             animation: spin 1s linear infinite;
             margin-right: 0.5rem;
         }
+        /* 父级菜单 */
+        .menu-parent {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        .menu-parent i {
+            transition: transform 0.3s ease;
+        }
+        .menu-parent.open .menu-arrow {
+            transform: rotate(180deg);
+        }
+
+        /* 子菜单容器 */
+        .nav-sub-items {
+            display: none;
+            padding-left: 1rem;
+        }
+        .nav-sub-items.open {
+            display: block;
+        }
+
+        /* 子项缩进，保持视觉层次 */
+        .nav-item[data-page] {
+            padding-left: 2rem;
+        }
     </style>
 </head>
 <body>

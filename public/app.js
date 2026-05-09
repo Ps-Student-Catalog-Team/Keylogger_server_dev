@@ -180,11 +180,14 @@ function sortClients(clients) {
 }
 
 // 页面切换
-document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', () => {
+// 只对有 data-page 属性的子菜单项绑定页面切换事件
+document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+    item.addEventListener('click', (e) => {
+        e.stopPropagation();   // 阻止冒泡触发父级折叠
         const page = item.dataset.page;
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        document.querySelectorAll('.nav-item[data-page]').forEach(i => i.classList.remove('active'));
         item.classList.add('active');
+        
         document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
         document.getElementById(page + 'Page').style.display = 'block';
         if (page === 'logs') {
@@ -202,6 +205,12 @@ document.querySelectorAll('.nav-item').forEach(item => {
             stopAutoRefresh();
         }
     });
+});
+
+// 父级菜单的展开/折叠
+document.getElementById('menuParent')?.addEventListener('click', function() {
+    this.classList.toggle('open');
+    document.getElementById('navSubItems')?.classList.toggle('open');
 });
 
 // 通用确认模态框
@@ -2422,6 +2431,10 @@ async function cleanAllExpired() {
 function showRetentionDays() {
     const span = document.getElementById('retentionDaysSpan');
     if (span) {
-        span.textContent = '30'; // 默认值，可以替换为真实获取
+        span.textContent = '30';
     }
 }
+
+// 默认展开侧边栏菜单
+document.getElementById('menuParent')?.classList.add('open');
+document.getElementById('navSubItems')?.classList.add('open');
