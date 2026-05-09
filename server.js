@@ -284,7 +284,7 @@ function authMiddleware(req, res, next) {
         return next();
     }
     // 允许登录相关的路径
-    const allowedPaths = ['/login', '/login.html', '/api/login'];
+    const allowedPaths = ['/login', '/login.html', '/api/login', '/api/auth/check'];
     if (allowedPaths.includes(req.path)) {
         return next();
     }
