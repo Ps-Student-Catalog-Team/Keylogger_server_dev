@@ -203,11 +203,8 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             loadVersions();
             stopAutoRefresh();
         } else if (page === 'system') {
-            // 系统信息页只需要停止自动刷新
             stopAutoRefresh();
         } else {
-            stopAutoRefresh();
-            loadVersions();
             stopAutoRefresh();
         }
     });

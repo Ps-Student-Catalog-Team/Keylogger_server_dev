@@ -31,9 +31,6 @@ let blacklistLastUpdate = 0; // 黑名单上次更新时间
 
 let blacklistLoading = false;
 
-// network.js
-const network = require('./public/network'); // 导入 network.js
-
 async function loadBlacklistCache() {
     const now = Date.now();
     if (now - blacklistLastUpdate < BLACKLIST_UPDATE_INTERVAL && blacklistCache.size > 0) {
@@ -720,7 +717,11 @@ pool.on('enqueue', () => {
     logger.debug('等待可用数据库连接');
 });
 
-// 修复：确保 connection 有效才释放
+const createNetworkRouter = require('./public/network');   // 引入函数
+const networkRouter = createNetworkRouter(pool, logger);    // 创建 Router，传入 pool 和 logger
+app.use('/api', networkRouter);                             // 挂载到 /api 路径
+
+// 确保 connection 有效才释放
 async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
     let lastError;
     for (let i = 0; i < retries; i++) {
