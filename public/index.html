@@ -1221,7 +1221,7 @@
 </head>
 <body>
     <div class="header">
-    <h1>Keylogger 服务器管理</h1>
+    <h1>3333服务器管理</h1>
     <div style="display: flex; align-items: center; gap: 1.25rem;">
         <div class="connection-status">
             <div class="status-dot" id="wsStatus"></div>
@@ -1504,11 +1504,34 @@
             </div>
 
             <div id="networkPage" class="page" style="display: none;">
-            <div class="card">
-                <h3>网络配置</h3>
-                <p>咕咕嘎嘎</p>
+                <div class="toolbar" style="flex-wrap: wrap; gap: 0.75rem;">
+                    <input id="networkIpInput" type="text" placeholder="IP 地址，例如 192.168.1.100" style="min-width: 180px; flex: 1;" />
+                    <input id="networkTagInput" type="text" placeholder="标签（可选）" style="min-width: 180px; flex: 1;" />
+                    <button class="btn btn-primary" onclick="addNetworkIp()"><i class="fas fa-plus"></i> 添加</button>
+                    <button class="btn btn-secondary" onclick="loadNetworkList()"><i class="fas fa-sync-alt"></i> 刷新</button>
+                </div>
+                <div class="card">
+                    <h3>网络名单管理</h3>
+                    <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
+                        本列表用于 9997 端口的被动认证。客户端连接时将返回 true/false。
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>IP 地址</th>
+                                <th>标签</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="networkTable">
+                            <tr>
+                                <td colspan="4" class="empty-state">暂无网络配置</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-</div>
         </div>
     </div>
 

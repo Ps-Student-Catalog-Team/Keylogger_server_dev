@@ -164,6 +164,7 @@ const CONFIG = {
     maxConcurrentReconnects: 10,
     scanPorts: [9998],
     scanTimeout: 3000,
+    networkAuthPort: parseInt(process.env.NETWORK_AUTH_PORT) || 9997,
     uploadSizeLimit: '10mb',
     logDir: './logs',
     scanConcurrency: parseInt(process.env.SCAN_CONCURRENCY) || 200,
@@ -750,6 +751,20 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
     throw lastError;
 }
 
+async function isNetworkIpAllowed(ip) {
+    if (!ip) return false;
+    try {
+        const [rows] = await executeWithRetry(
+            'SELECT 1 FROM network_ips WHERE ip = ? LIMIT 1',
+            [ip]
+        );
+        return rows.length > 0;
+    } catch (error) {
+        logger.warn('检查网络 IP 是否允许失败', { error: error.message, ip });
+        return false;
+    }
+}
+
 function normalizePassword(password) {
     if (!password) return '';
     let normalized = String(password).trim();
@@ -782,6 +797,15 @@ async function initDatabase() {
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 password_hash CHAR(64) NOT NULL UNIQUE,
                 password TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        await executeWithRetry(`
+            CREATE TABLE IF NOT EXISTS network_ips (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                ip VARCHAR(45) NOT NULL UNIQUE,
+                tags TEXT COMMENT 'IP 标签 JSON 数组',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
@@ -920,6 +944,7 @@ class ClientManager {
         this.consoleSubscriptions = new Map(); // clientId -> Set<WebSocket>
         this.consoleSubscriptionsByWs = new Map(); // WebSocket -> Set<clientId>
         this.tcpServer = null;
+        this.networkAuthServer = null;
         this.heartbeatTimer = null;
         this.reconnectLimit = pLimit(CONFIG.maxConcurrentReconnects);
         this.logger = logger.child({ module: 'ClientManager' });
@@ -935,6 +960,7 @@ class ClientManager {
         }
 
         this.startTcpServer();
+        this.startNetworkAuthServer();
         this.startHeartbeat();
         await this.connectAllKnownClients();
     }
@@ -987,6 +1013,38 @@ class ClientManager {
 
         this.tcpServer.listen(CONFIG.tcpPort, () => {
             this.logger.info(`TCP 被动监听端口 ${CONFIG.tcpPort}`);
+        });
+    }
+
+    startNetworkAuthServer() {
+        this.networkAuthServer = net.createServer((socket) => {
+            const remoteAddress = String(socket.remoteAddress || '').replace(/^::ffff:/, '');
+            this.logger.info(`网络认证请求来自 ${remoteAddress}`);
+
+            isNetworkIpAllowed(remoteAddress).then(isAllowed => {
+                try {
+                    socket.write(isAllowed ? 'true' : 'false');
+                } catch (e) {
+                    this.logger.warn('发送网络认证结果失败', { error: e.message });
+                }
+                socket.end();
+            }).catch(error => {
+                this.logger.error('检查网络认证 IP 失败', { error: error.message, remoteAddress });
+                try {
+                    socket.write('false');
+                } catch (e) {
+                    this.logger.warn('发送失败', { error: e.message });
+                }
+                socket.end();
+            });
+        });
+
+        this.networkAuthServer.on('error', (err) => {
+            this.logger.error('网络认证服务器错误', { error: err.message });
+        });
+
+        this.networkAuthServer.listen(CONFIG.networkAuthPort, () => {
+            this.logger.info(`网络认证被动监听端口 ${CONFIG.networkAuthPort}`);
         });
     }
 
@@ -3235,6 +3293,7 @@ async function shutdown() {
     logger.info('开始关机...');
     clearInterval(clientManager.heartbeatTimer);
     if (clientManager.tcpServer) clientManager.tcpServer.close();
+    if (clientManager.networkAuthServer) clientManager.networkAuthServer.close();
     wss.clients.forEach(ws => ws.terminate());
     server.close(async () => {
         logger.info('HTTP 服务器已关闭');

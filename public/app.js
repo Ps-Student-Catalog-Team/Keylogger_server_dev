@@ -65,6 +65,7 @@ const dom = {
     consoleViewRawBtn: document.getElementById('consoleViewRawBtn'),
     consoleViewProcessedBtn: document.getElementById('consoleViewProcessedBtn'),
     logsTable: document.getElementById('logsTable'),
+    networkTable: document.getElementById('networkTable'),
     scanProgress: document.getElementById('scanProgress'),
     toast: document.getElementById('toast')
 };
@@ -197,6 +198,9 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         } else if (page === 'blacklist') {
             blacklistPage = 1;
             loadBlacklist();
+            stopAutoRefresh();
+        } else if (page === 'network') {
+            loadNetworkList();
             stopAutoRefresh();
         } else if (page === 'more') {
             // 切换到“更多”页时自动加载版本列表
@@ -1097,6 +1101,92 @@ function scanNetwork() {
     }));
     dom.scanProgress.classList.add('show');
     hideModal('scanModal');
+}
+
+async function loadNetworkList() {
+    if (!dom.networkTable) return;
+    dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载中...</td></tr>';
+    try {
+        const response = await fetch('/api/network/list');
+        const list = await response.json();
+        renderNetworkTable(list);
+    } catch (error) {
+        console.error('加载网络配置失败:', error);
+        dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载失败，请刷新</td></tr>';
+        showToast('加载网络配置失败', 'error');
+    }
+}
+
+async function addNetworkIp() {
+    const ipInput = document.getElementById('networkIpInput');
+    const tagInput = document.getElementById('networkTagInput');
+    if (!ipInput) return;
+
+    const ip = ipInput.value.trim();
+    const tag = tagInput ? tagInput.value.trim() : '';
+    const ipRegex = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+    if (!ip || !ipRegex.test(ip)) {
+        showToast('请输入合法 IP 地址', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/network', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip, tags: tag ? [tag] : [] })
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error || '添加失败');
+        }
+        ipInput.value = '';
+        if (tagInput) tagInput.value = '';
+        showToast('网络 IP 已保存', 'success');
+        loadNetworkList();
+    } catch (error) {
+        console.error('保存网络 IP 失败:', error);
+        showToast(error.message || '保存失败', 'error');
+    }
+}
+
+async function deleteNetworkIp(id) {
+    if (!confirm('确认删除该网络 IP 吗？')) return;
+    try {
+        const response = await fetch(`/api/network/${id}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error || '删除失败');
+        }
+        showToast('已删除网络 IP', 'success');
+        loadNetworkList();
+    } catch (error) {
+        console.error('删除网络 IP 失败:', error);
+        showToast(error.message || '删除失败', 'error');
+    }
+}
+
+function renderNetworkTable(items) {
+    if (!dom.networkTable) return;
+    if (!Array.isArray(items) || items.length === 0) {
+        dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">暂无网络配置</td></tr>';
+        return;
+    }
+
+    dom.networkTable.innerHTML = items.map(item => {
+        const tags = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+        const created = item.createdAt ? new Date(item.createdAt).toLocaleString() : '未知';
+        return `
+            <tr>
+                <td>${escapeHtml(item.ip)}</td>
+                <td>${escapeHtml(tags)}</td>
+                <td>${escapeHtml(created)}</td>
+                <td>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteNetworkIp(${item.id})">删除</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
 }
 
 // 刷新日志列表（日志页面）
