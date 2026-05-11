@@ -1772,7 +1772,7 @@ class ClientManager {
 
                 const onConnect = () => {
                     const updateCommand = {
-                        action: 'update',
+                        action: 'update_to',
                         version: versionInfo.version,
                         download_url: versionInfo.download_url
                     };
