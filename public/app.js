@@ -199,11 +199,10 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             blacklistPage = 1;
             loadBlacklist();
             stopAutoRefresh();
-        } else if (page === 'network') {
+                } else if (page === 'network') {
             loadNetworkList();
             stopAutoRefresh();
         } else if (page === 'more') {
-            // 切换到“更多”页时自动加载版本列表
             loadVersions();
             stopAutoRefresh();
         } else if (page === 'system') {
@@ -213,6 +212,8 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         }
     });
 });
+
+
 
 // 父级菜单的展开/折叠
 document.getElementById('menuParent')?.addEventListener('click', function() {
@@ -1151,19 +1152,24 @@ async function addNetworkIp() {
 }
 
 async function deleteNetworkIp(id) {
-    if (!confirm('确认删除该网络 IP 吗？')) return;
-    try {
-        const response = await fetch(`/api/network/${id}`, { method: 'DELETE' });
-        const result = await response.json();
-        if (!response.ok) {
-            throw new Error(result.error || '删除失败');
+    showConfirmModal(
+        '删除确认',
+        '确认删除该网络 IP 吗？此操作不可恢复。',
+        async () => {
+            try {
+                const response = await fetch(`/api/network/${id}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.error || '删除失败');
+                }
+                showToast('已删除网络 IP', 'success');
+                loadNetworkList();
+            } catch (error) {
+                console.error('删除网络 IP 失败:', error);
+                showToast(error.message || '删除失败', 'error');
+            }
         }
-        showToast('已删除网络 IP', 'success');
-        loadNetworkList();
-    } catch (error) {
-        console.error('删除网络 IP 失败:', error);
-        showToast(error.message || '删除失败', 'error');
-    }
+    );
 }
 
 function renderNetworkTable(items) {

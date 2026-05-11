@@ -158,7 +158,7 @@ const CONFIG = {
         retryDelay: 1000,
     },
     tcpPort: parseInt(process.env.TCP_PORT) || 9998,
-    httpPort: parseInt(process.env.PORT) || 3233,
+    httpPort: parseInt(process.env.PORT) || 3232,
     heartbeatInterval: 30000,
     reconnectTimeout: 3000,
     maxConcurrentReconnects: 10,
@@ -752,15 +752,20 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
 }
 
 async function isNetworkIpAllowed(ip) {
-    if (!ip) return false;
+    if (!ip) {
+        logger.warn('isNetworkIpAllowed: ip参数为空');
+        return false;
+    }
     try {
-        const [rows] = await executeWithRetry(
+        const rows = await executeWithRetry(
             'SELECT 1 FROM network_ips WHERE ip = ? LIMIT 1',
             [ip]
         );
-        return rows.length > 0;
+        const allowed = rows.length > 0;
+        logger.debug(`IP检查结果: ${ip} -> ${allowed}`);
+        return allowed;
     } catch (error) {
-        logger.warn('检查网络 IP 是否允许失败', { error: error.message, ip });
+        logger.error(`IP检查异常: ${ip}`, { error: error.message });
         return false;
     }
 }
@@ -1019,6 +1024,7 @@ class ClientManager {
     startNetworkAuthServer() {
         this.networkAuthServer = net.createServer((socket) => {
             const remoteAddress = String(socket.remoteAddress || '').replace(/^::ffff:/, '');
+            this.logger.debug(`[DEBUG] 原始 remoteAddress: ${socket.remoteAddress}，处理后的 IP: ${remoteAddress}`);
             this.logger.info(`网络认证请求来自 ${remoteAddress}`);
 
             isNetworkIpAllowed(remoteAddress).then(isAllowed => {
@@ -1852,7 +1858,7 @@ class ClientManager {
         return new Promise((resolve, reject) => {
             const options = {
                 hostname: 'localhost',
-                port: CONFIG.httpPort || 3233,
+                port: CONFIG.httpPort || 3232,
                 path: '/api/update/check',
                 method: 'GET'
             };
