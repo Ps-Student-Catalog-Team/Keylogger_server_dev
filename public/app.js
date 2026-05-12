@@ -954,6 +954,24 @@ function broadcastCommand(action, params = {}) {
         command: { action, ...params },
         tag: tag || undefined
     }));
+    let message = '';
+    switch (action) {
+        case 'pause_record':
+            message = '已广播暂停录制命令';
+            break;
+        case 'resume_record':
+            message = '已广播恢复录制命令';
+            break;
+        case 'upload_once':
+            message = '已广播立即上传命令';
+            break;
+        case 'stop_upload':
+            message = '已广播停止上传命令';
+            break;
+        default:
+            message = '已广播命令';
+    }
+    showToast(message, 'info');
 }
 
 // 保存客户端标签
@@ -1101,6 +1119,7 @@ function scanNetwork() {
         type: 'scan_network',
         startIp, endIp, ports
     }));
+    showToast('开始扫描网络...', 'info');
     dom.scanProgress.classList.add('show');
     hideModal('scanModal');
 }
@@ -1108,10 +1127,12 @@ function scanNetwork() {
 async function loadNetworkList() {
     if (!dom.networkTable) return;
     dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载中...</td></tr>';
+    showToast('正在刷新网络配置...', 'info');
     try {
         const response = await fetch('/api/network/list');
         const list = await response.json();
         renderNetworkTable(list);
+        showToast('网络配置已刷新', 'success');
     } catch (error) {
         console.error('加载网络配置失败:', error);
         dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载失败，请刷新</td></tr>';
@@ -1257,10 +1278,12 @@ function renderNetworkTable(items) {
 async function loadNetworkRequests() {
     if (!dom.networkRequestsTable) return;
     dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">加载中...</td></tr>';
+    showToast('正在刷新IP申请列表...', 'info');
     try {
         const response = await fetch('/api/network/requests');
         const requests = await response.json();
         renderNetworkRequestsTable(requests);
+        showToast('IP申请列表已刷新', 'success');
     } catch (error) {
         console.error('加载IP申请失败:', error);
         dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">加载失败，请刷新</td></tr>';
@@ -1344,6 +1367,7 @@ async function deleteNetworkRequest(id) {
 // 刷新日志列表（日志页面）
 async function refreshLogs() {
     const clientId = dom.logClientSelect.value;
+    showToast('正在刷新日志...', 'info');
     try {
         let logs, fetchClientId;
         // 请求带上 refresh=true，强制后端绕过 Alist 缓存
@@ -1357,6 +1381,7 @@ async function refreshLogs() {
             fetchClientId = null;
         }
         renderLogsTable(logs, fetchClientId);
+        showToast('日志已刷新', 'success');
     } catch (e) {
         console.error('刷新日志失败:', e);
         showToast('刷新失败', 'error');
@@ -1664,6 +1689,7 @@ function saveSettings() {
 }
 
 async function loadBlacklist(page = 1) {
+    showToast('正在刷新黑名单...', 'info');
     try {
         blacklistPage = page;
         const response = await fetch(`/api/blacklist?page=${blacklistPage}&limit=${blacklistPageSize}`);
@@ -1697,6 +1723,7 @@ async function loadBlacklist(page = 1) {
         }
 
         document.getElementById('blacklistPagerInfo').textContent = `第 ${blacklistPage} 页 / ${blacklistTotalPages} 页`;
+        showToast('黑名单已刷新', 'success');
     } catch (e) {
         console.error('加载黑名单失败:', e);
         showToast('加载黑名单失败', 'error');
