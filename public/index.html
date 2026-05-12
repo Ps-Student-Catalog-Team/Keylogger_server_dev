@@ -1221,7 +1221,7 @@
 </head>
 <body>
     <div class="header">
-    <h1>3333服务器管理</h1>
+    <h1>服务器管理</h1>
     <div style="display: flex; align-items: center; gap: 1.25rem;">
         <div class="connection-status">
             <div class="status-dot" id="wsStatus"></div>
@@ -1527,6 +1527,32 @@
                         <tbody id="networkTable">
                             <tr>
                                 <td colspan="4" class="empty-state">暂无网络配置</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 2rem;">
+                    <h3>IP 申请列表</h3>
+                    <p style="color: var(--gray); margin-bottom: 1rem; font-size: 0.9rem;">
+                        未在白名单中的IP访问尝试将被记录在此处。您可以批准将其添加到白名单。
+                    </p>
+                    <div class="toolbar" style="margin-bottom: 1rem;">
+                        <button class="btn btn-secondary" onclick="loadNetworkRequests()"><i class="fas fa-sync-alt"></i> 刷新申请</button>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>IP 地址</th>
+                                <th>首次访问</th>
+                                <th>最后访问</th>
+                                <th>访问次数</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="networkRequestsTable">
+                            <tr>
+                                <td colspan="5" class="empty-state">暂无IP申请</td>
                             </tr>
                         </tbody>
                     </table>
