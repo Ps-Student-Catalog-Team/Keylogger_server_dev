@@ -2331,6 +2331,9 @@ app.get('/api/update/download', asyncHandler(async (req, res) => {
         if (rows.length > 0) {
             const alistUrl = rows[0].download_url;
             fileToDownload = alistUrl.split('/').pop();
+            if (!fileToDownload) {
+                return res.status(500).json({ error: '版本文件URL格式错误' });
+            }
         }
     }
     
