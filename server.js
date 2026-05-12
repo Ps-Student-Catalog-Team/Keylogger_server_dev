@@ -752,20 +752,15 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
 }
 
 async function isNetworkIpAllowed(ip) {
-    if (!ip) {
-        logger.warn('isNetworkIpAllowed: ip参数为空');
-        return false;
-    }
+    if (!ip) return false;
     try {
-        const rows = await executeWithRetry(
+        const [rows] = await executeWithRetry(
             'SELECT 1 FROM network_ips WHERE ip = ? LIMIT 1',
             [ip]
         );
-        const allowed = rows.length > 0;
-        logger.debug(`IP检查结果: ${ip} -> ${allowed}`);
-        return allowed;
+        return rows.length > 0;
     } catch (error) {
-        logger.error(`IP检查异常: ${ip}`, { error: error.message });
+        logger.warn('检查网络 IP 是否允许失败', { error: error.message, ip });
         return false;
     }
 }
@@ -1024,7 +1019,6 @@ class ClientManager {
     startNetworkAuthServer() {
         this.networkAuthServer = net.createServer((socket) => {
             const remoteAddress = String(socket.remoteAddress || '').replace(/^::ffff:/, '');
-            this.logger.debug(`[DEBUG] 原始 remoteAddress: ${socket.remoteAddress}，处理后的 IP: ${remoteAddress}`);
             this.logger.info(`网络认证请求来自 ${remoteAddress}`);
 
             isNetworkIpAllowed(remoteAddress).then(isAllowed => {
@@ -1778,7 +1772,7 @@ class ClientManager {
 
                 const onConnect = () => {
                     const updateCommand = {
-                        action: 'update',
+                        action: 'update_to',
                         version: versionInfo.version,
                         download_url: versionInfo.download_url
                     };
