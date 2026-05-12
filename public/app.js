@@ -66,6 +66,7 @@ const dom = {
     consoleViewProcessedBtn: document.getElementById('consoleViewProcessedBtn'),
     logsTable: document.getElementById('logsTable'),
     networkTable: document.getElementById('networkTable'),
+    networkRequestsTable: document.getElementById('networkRequestsTable'),
     scanProgress: document.getElementById('scanProgress'),
     toast: document.getElementById('toast')
 };
@@ -1116,6 +1117,8 @@ async function loadNetworkList() {
         dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载失败，请刷新</td></tr>';
         showToast('加载网络配置失败', 'error');
     }
+    // 同时加载IP申请列表
+    loadNetworkRequests();
 }
 
 async function addNetworkIp() {
@@ -1172,6 +1175,60 @@ async function deleteNetworkIp(id) {
     );
 }
 
+async function editNetworkTags(id, currentTags) {
+    const modalId = `editTagsModal_${id}`;
+    const inputId = `editTagsInput_${id}`;
+
+    // 创建模态框
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = modalId;
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3>编辑标签</h3>
+                <button class="close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
+            </div>
+            <div class="form-group">
+                <label>标签（多个标签请用逗号分隔）</label>
+                <input type="text" id="${inputId}" value="${escapeHtml(currentTags || '')}" placeholder="例如: 服务器,测试" />
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1rem;">
+                <button class="btn btn-secondary" onclick="document.getElementById('${modalId}').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitEditTags(${id}, '${modalId}')">保存</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.classList.add('show');
+    document.getElementById(inputId).focus();
+}
+
+async function submitEditTags(id, modalId) {
+    const input = document.getElementById(`editTagsInput_${id}`);
+    if (!input) return;
+
+    const tags = input.value.split(',').map(tag => tag.trim()).filter(Boolean);
+
+    try {
+        const response = await fetch(`/api/network/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || '保存失败');
+        }
+        showToast('白名单标签已更新', 'success');
+        loadNetworkList();
+        document.getElementById(modalId).remove();
+    } catch (error) {
+        console.error('更新网络标签失败:', error);
+        showToast(error.message || '更新失败', 'error');
+    }
+}
+
 function renderNetworkTable(items) {
     if (!dom.networkTable) return;
     if (!Array.isArray(items) || items.length === 0) {
@@ -1188,11 +1245,100 @@ function renderNetworkTable(items) {
                 <td>${escapeHtml(tags)}</td>
                 <td>${escapeHtml(created)}</td>
                 <td>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="editNetworkTags(${item.id}, '${escapeHtml(tags)}')">编辑标签</button>
                     <button class="btn btn-outline-danger btn-sm" onclick="deleteNetworkIp(${item.id})">删除</button>
                 </td>
             </tr>
         `;
     }).join('');
+}
+
+// 加载IP申请列表
+async function loadNetworkRequests() {
+    if (!dom.networkRequestsTable) return;
+    dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">加载中...</td></tr>';
+    try {
+        const response = await fetch('/api/network/requests');
+        const requests = await response.json();
+        renderNetworkRequestsTable(requests);
+    } catch (error) {
+        console.error('加载IP申请失败:', error);
+        dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">加载失败，请刷新</td></tr>';
+        showToast('加载IP申请失败', 'error');
+    }
+}
+
+// 渲染IP申请表格
+function renderNetworkRequestsTable(requests) {
+    if (!dom.networkRequestsTable) return;
+    if (!Array.isArray(requests) || requests.length === 0) {
+        dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">暂无IP申请</td></tr>';
+        return;
+    }
+
+    dom.networkRequestsTable.innerHTML = requests.map(request => {
+        const firstSeen = request.firstSeen ? new Date(request.firstSeen).toLocaleString() : '未知';
+        const lastSeen = request.lastSeen ? new Date(request.lastSeen).toLocaleString() : '未知';
+        return `
+            <tr>
+                <td>${escapeHtml(request.ip)}</td>
+                <td>${escapeHtml(firstSeen)}</td>
+                <td>${escapeHtml(lastSeen)}</td>
+                <td>${escapeHtml(request.requestCount.toString())}</td>
+                <td>
+                    <button class="btn btn-outline-success btn-sm" onclick="approveNetworkRequest(${request.id})">批准</button>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteNetworkRequest(${request.id})">拒绝</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// 批准IP申请
+async function approveNetworkRequest(id) {
+    showConfirmModal(
+        '批准申请',
+        '确认将此IP添加到白名单吗？',
+        async () => {
+            try {
+                const response = await fetch(`/api/network/requests/${id}/approve`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || '批准失败');
+                }
+                showToast('IP已添加到白名单', 'success');
+                loadNetworkRequests();
+                loadNetworkList();
+            } catch (error) {
+                console.error('批准IP申请失败:', error);
+                showToast(error.message || '批准失败', 'error');
+            }
+        }
+    );
+}
+
+// 删除IP申请
+async function deleteNetworkRequest(id) {
+    showConfirmModal(
+        '拒绝申请',
+        '确认拒绝此IP申请吗？',
+        async () => {
+            try {
+                const response = await fetch(`/api/network/requests/${id}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || '拒绝失败');
+                }
+                showToast('IP申请已拒绝', 'success');
+                loadNetworkRequests();
+            } catch (error) {
+                console.error('拒绝IP申请失败:', error);
+                showToast(error.message || '拒绝失败', 'error');
+            }
+        }
+    );
 }
 
 // 刷新日志列表（日志页面）

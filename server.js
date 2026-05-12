@@ -811,6 +811,17 @@ async function initDatabase() {
         `);
 
         await executeWithRetry(`
+            CREATE TABLE IF NOT EXISTS network_ip_requests (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                ip VARCHAR(45) NOT NULL,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                request_count INT DEFAULT 1,
+                UNIQUE KEY unique_ip (ip)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
+        await executeWithRetry(`
             CREATE TABLE IF NOT EXISTS client_versions (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 version VARCHAR(20) NOT NULL UNIQUE COMMENT '版本号，如 1.0.1',

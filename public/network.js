@@ -29,6 +29,24 @@ module.exports = function(pool, logger) {
             );
 
             const isValid = rows.length > 0;
+
+            // 如果IP不在白名单中，记录到申请表
+            if (!isValid) {
+                try {
+                    await pool.execute(
+                        `INSERT INTO network_ip_requests (ip, request_count) 
+                         VALUES (?, 1) 
+                         ON DUPLICATE KEY UPDATE 
+                             last_seen = CURRENT_TIMESTAMP, 
+                             request_count = request_count + 1`,
+                        [ip]
+                    );
+                    logger.debug(`[network] IP ${ip} 不在白名单中，已记录到申请表`);
+                } catch (error) {
+                    logger.warn(`[network] 记录IP申请失败: ${error.message}`, { ip });
+                }
+            }
+
             logger.debug(`[network] IP ${ip} 是否允许: ${isValid}`);
             res.json(isValid);
         } catch (error) {
@@ -77,6 +95,30 @@ module.exports = function(pool, logger) {
         }
     });
 
+    router.put('/network/:id', async (req, res) => {
+        try {
+            const id = parseInt(req.params.id, 10);
+            if (Number.isNaN(id)) {
+                return res.status(400).json({ error: '无效的记录 ID' });
+            }
+            const { tags } = req.body;
+            const tagArray = Array.isArray(tags) ? tags.map(String).filter(Boolean) : (tags ? [String(tags).trim()] : []);
+
+            const [result] = await pool.execute(
+                'UPDATE network_ips SET tags = ? WHERE id = ?',
+                [JSON.stringify(tagArray), id]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ error: '未找到该网络记录' });
+            }
+
+            res.json({ success: true });
+        } catch (error) {
+            logger.error(`[network] PUT /network/${req.params.id} 错误: ${error.message}`);
+            res.status(500).json({ error: '无法更新网络标签' });
+        }
+    });
+
     router.delete('/network/:id', async (req, res) => {
         try {
             const id = parseInt(req.params.id, 10);
@@ -88,6 +130,74 @@ module.exports = function(pool, logger) {
         } catch (error) {
             logger.error(`[network] DELETE /network/${req.params.id} 错误: ${error.message}`);
             res.status(500).json({ error: '无法删除网络配置' });
+        }
+    });
+
+    router.get('/network/requests', async (req, res) => {
+        try {
+            const [rows] = await pool.execute(
+                'SELECT id, ip, first_seen, last_seen, request_count FROM network_ip_requests ORDER BY last_seen DESC'
+            );
+            const result = rows.map(row => ({
+                id: row.id,
+                ip: row.ip,
+                firstSeen: row.first_seen,
+                lastSeen: row.last_seen,
+                requestCount: row.request_count
+            }));
+            res.json(result);
+        } catch (error) {
+            logger.error(`[network] /network/requests 错误: ${error.message}`);
+            res.status(500).json({ error: '无法加载IP申请列表' });
+        }
+    });
+
+    router.post('/network/requests/:id/approve', async (req, res) => {
+        try {
+            const id = parseInt(req.params.id, 10);
+            if (Number.isNaN(id)) {
+                return res.status(400).json({ error: '无效的申请 ID' });
+            }
+
+            // 获取申请的IP
+            const [requestRows] = await pool.execute(
+                'SELECT ip FROM network_ip_requests WHERE id = ?',
+                [id]
+            );
+
+            if (requestRows.length === 0) {
+                return res.status(404).json({ error: '未找到该IP申请' });
+            }
+
+            const ip = requestRows[0].ip;
+
+            // 添加到白名单
+            await pool.execute(
+                `INSERT INTO network_ips (ip, tags) VALUES (?, ?)`,
+                [ip, JSON.stringify([])]
+            );
+
+            // 删除申请记录
+            await pool.execute('DELETE FROM network_ip_requests WHERE id = ?', [id]);
+
+            res.json({ success: true });
+        } catch (error) {
+            logger.error(`[network] POST /network/requests/${req.params.id}/approve 错误: ${error.message}`);
+            res.status(500).json({ error: '无法批准IP申请' });
+        }
+    });
+
+    router.delete('/network/requests/:id', async (req, res) => {
+        try {
+            const id = parseInt(req.params.id, 10);
+            if (Number.isNaN(id)) {
+                return res.status(400).json({ error: '无效的申请 ID' });
+            }
+            await pool.execute('DELETE FROM network_ip_requests WHERE id = ?', [id]);
+            res.json({ success: true });
+        } catch (error) {
+            logger.error(`[network] DELETE /network/requests/${req.params.id} 错误: ${error.message}`);
+            res.status(500).json({ error: '无法删除IP申请' });
         }
     });
 
