@@ -159,6 +159,7 @@ const CONFIG = {
     },
     tcpPort: parseInt(process.env.TCP_PORT) || 9998,
     httpPort: parseInt(process.env.PORT) || 3232,
+    serverBaseUrl: process.env.SERVER_BASE_URL || `http://localhost:${process.env.PORT || 3232}`,
     heartbeatInterval: 30000,
     reconnectTimeout: 3000,
     maxConcurrentReconnects: 10,
@@ -1870,9 +1871,13 @@ class ClientManager {
                     try {
                         const result = JSON.parse(data);
                         if (result.data && result.data.version) {
+                            // 构造服务器的代理 URL，而不是 Alist URL
+                            const serverBaseUrl = CONFIG.serverBaseUrl || `http://localhost:${CONFIG.httpPort || 3232}`;
+                            const serverUrl = `${serverBaseUrl}/api/update/download?version=${result.data.version}`;
+                            
                             resolve({
                                 version: result.data.version,
-                                download_url: result.data.download_url
+                                download_url: serverUrl
                             });
                         } else {
                             resolve({ version: '', download_url: '' });
@@ -2309,6 +2314,56 @@ app.get('/api/update/check', asyncHandler(async (req, res) => {
             }
         });
     }
+}));
+
+// ========== 代理下载版本文件（从 Alist 获取）============
+app.get('/api/update/download', asyncHandler(async (req, res) => {
+    const { version, filename } = req.query;
+    
+    let fileToDownload = filename;
+    
+    // 如果提供了 version，从数据库查找文件名
+    if (!fileToDownload && version) {
+        const rows = await executeWithRetry(
+            'SELECT download_url FROM client_versions WHERE version = ?',
+            [version]
+        );
+        if (rows.length > 0) {
+            const alistUrl = rows[0].download_url;
+            fileToDownload = alistUrl.split('/').pop();
+        }
+    }
+    
+    if (!fileToDownload) {
+        return res.status(400).json({ error: '缺少 version 或 filename 参数' });
+    }
+    
+    // 构造 Alist 下载 URL
+    const alistDownloadUrl = `${alistClient.baseUrl}/d${CONFIG.alist.versionPath}/${encodeURIComponent(fileToDownload)}`;
+    
+    logger.debug(`代理下载来自 Alist: ${alistDownloadUrl}`);
+    
+    // 根据 URL 选择 http 或 https 模块
+    const protocol = alistDownloadUrl.startsWith('https') ? https : http;
+    
+    protocol.get(alistDownloadUrl, (alistRes) => {
+        if (alistRes.statusCode !== 200) {
+            logger.error('从 Alist 获取失败', { status: alistRes.statusCode });
+            return res.status(500).json({ error: '从 Alist 获取文件失败' });
+        }
+        
+        // 设置响应头
+        res.setHeader('Content-Disposition', `attachment; filename="${fileToDownload}"`);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        
+        // 将 Alist 的响应管道到客户端
+        alistRes.pipe(res);
+    }).on('error', (error) => {
+        logger.error('代理下载失败', { error: error.message });
+        if (!res.headersSent) {
+            res.status(500).json({ error: '下载文件失败' });
+        }
+    });
 }));
 
 app.post('/api/update/deactivate', asyncHandler(async (req, res) => {
