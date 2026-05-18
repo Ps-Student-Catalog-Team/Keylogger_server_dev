@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
         <meta charset="UTF-8">
@@ -1267,6 +1267,17 @@
                 </div>
             </div>
 
+            <!-- 第四个父级：Minecraft 服务器 -->
+            <div class="nav-item menu-parent" id="mcParent">
+                <span><i class="fas fa-dragon"></i> Minecraft 服务器</span>
+                <i class="fas fa-chevron-down menu-arrow"></i>
+            </div>
+            <div class="nav-sub-items" id="mcSubItems">
+                <div class="nav-item" data-page="mc">
+                    <i class="fas fa-server"></i> 服务器控制台
+                </div>
+            </div>
+
             <!-- 第三个父级：系统 -->
             <div class="nav-item menu-parent" id="systemParent">
                 <span><i class="fas fa-info-circle"></i> 系统</span>
@@ -1503,6 +1514,41 @@
                         <p><strong>服务器状态:</strong> <span id="serverStatus">运行中</span></p>
                         <p><strong>当前时间:</strong> <span id="currentTime"></span></p>
                     </div>
+                </div>
+            </div>
+
+            <!-- Minecraft 服务器页面 -->
+            <div id="mcPage" class="page" style="display: none;">
+                <div class="toolbar" style="flex-wrap: wrap; gap: 0.75rem;">
+                    <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                        <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
+                        <button class="btn btn-warning" onclick="stopMinecraftServer()"><i class="fas fa-stop"></i> 停止</button>
+                        <button class="btn btn-danger" onclick="killMinecraftServer()"><i class="fas fa-bomb"></i> 强制终止</button>
+                        <span style="color: var(--gray);">状态: <strong id="mcStatus">未知</strong></span>
+                        <span style="color: var(--gray);">PID: <strong id="mcPid">-</strong></span>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>服务器配置</h3>
+                    <div class="form-group">
+                        <label>完整启动命令</label>
+                        <input type="text" id="mcConfigCommand" placeholder="例如: java -Xms1024M -Xmx2048M -jar server.jar nogui" />
+                    </div>
+                    <div class="form-group">
+                        <label>工作目录</label>
+                        <input type="text" id="mcConfigDir" placeholder="Minecraft 服务器文件夹路径" />
+                    </div>
+                    <button class="btn btn-primary" onclick="saveMcConfig()">
+                        <i class="fas fa-save"></i> 保存配置
+                    </button>
+                </div>
+                <div class="card" style="margin-top: 1rem;">
+                    <h3>控制台输出</h3>
+                    <div style="margin-bottom: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                        <input type="text" id="mcCommandInput" placeholder="输入控制台命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
+                        <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送命令</button>
+                    </div>
+                    <pre id="mcStdout" style="height: 360px; overflow-y: auto; background: #111827; color: #e5e7eb; padding: 1rem; border-radius: 0.75rem; white-space: pre-wrap; word-break: break-word;"></pre>
                 </div>
             </div>
 
@@ -1751,5 +1797,6 @@
     <div class="toast" id="toast"></div>
 
     <script src="app.js"></script>
+    <script src="mc_console.js"></script>
 </body>
 </html>

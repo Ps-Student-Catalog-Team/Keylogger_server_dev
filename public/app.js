@@ -276,13 +276,27 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             blacklistPage = 1;
             loadBlacklist();
             stopAutoRefresh();
-                } else if (page === 'network') {
+        } else if (page === 'network') {
             loadNetworkList();
             stopAutoRefresh();
         } else if (page === 'more') {
             loadVersions();
             stopAutoRefresh();
         } else if (page === 'system') {
+            stopAutoRefresh();
+        } else if (page === 'mc') {
+            if (typeof loadMcConfig === 'function') {
+                loadMcConfig();
+            }
+            if (typeof loadMcStatus === 'function') {
+                loadMcStatus();
+            }
+            if (typeof loadMcLogs === 'function') {
+                loadMcLogs();
+            }
+            if (typeof startMcAutoRefresh === 'function') {
+                startMcAutoRefresh();
+            }
             stopAutoRefresh();
         } else {
             stopAutoRefresh();
@@ -306,6 +320,11 @@ document.getElementById('toolsParent')?.addEventListener('click', function() {
 document.getElementById('systemParent')?.addEventListener('click', function() {
     this.classList.toggle('open');
     document.getElementById('systemSubItems')?.classList.toggle('open');
+});
+// 第四个父级菜单：Minecraft 服务器
+document.getElementById('mcParent')?.addEventListener('click', function() {
+    this.classList.toggle('open');
+    document.getElementById('mcSubItems')?.classList.toggle('open');
 });
 
 // 通用确认模态框

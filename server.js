@@ -18,6 +18,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { LRUCache } = require('lru-cache');
 const rateLimit = require('express-rate-limit');
+const mcController = require('./mc_controller');
 
 // ========== 版本缓存 ==========
 const versionCache = new LRUCache({
@@ -425,6 +426,7 @@ function userMiddleware(req, res, next) {
 
 app.use(userMiddleware);
 app.use(express.static(path.join(__dirname, 'public')));
+mcController.setupRoutes(app);
 
 // ========== Alist 客户端 ==========
 class AlistClient {
