@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
         <meta charset="UTF-8">
@@ -647,6 +647,55 @@
             font-size: 0.8rem;
         }
 
+        .mc-stats-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
+        .mc-stats-row:last-child {
+            border-bottom: none;
+        }
+
+        .mc-stats-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--gray);
+            font-weight: 500;
+        }
+
+        .mc-player-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.85rem 0.75rem;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+
+        .mc-player-item:last-child {
+            border-bottom: none;
+        }
+
+        .mc-player-item span {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.95rem;
+        }
+
+        .mc-player-item button {
+            min-width: 70px;
+        }
+
+        .mc-player-empty {
+            color: var(--gray);
+            padding: 1rem 0;
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -1118,6 +1167,51 @@
             color: var(--primary);
         }
 
+        .mc-player-empty {
+            text-align: center;
+            padding: 1.25rem 1rem;
+            color: var(--gray);
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+            margin: 0;
+            font-size: 0.95rem;
+        }
+
+        .mc-player-item {
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .mc-player-item:last-child {
+            border-bottom: none;
+        }
+
+        .mc-stats-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            gap: 1rem;
+        }
+
+        .mc-stats-row:last-child {
+            border-bottom: none;
+        }
+
+        .mc-stats-label {
+            color: var(--gray);
+            font-size: 0.95rem;
+        }
+
+        .mc-player-item:last-child {
+            border-bottom: none;
+        }
+
         .scan-progress {
             display: none;
             align-items: center;
@@ -1174,6 +1268,14 @@
 
         .toast.error {
             background: var(--danger);
+        }
+
+        .toast.info {
+            background: var(--info);
+        }
+
+        .toast.warning {
+            background: var(--warning);
         }
 
         .toast i {
@@ -1273,8 +1375,14 @@
                 <i class="fas fa-chevron-down menu-arrow"></i>
             </div>
             <div class="nav-sub-items" id="mcSubItems">
-                <div class="nav-item" data-page="mc">
-                    <i class="fas fa-server"></i> 服务器控制台
+                <div class="nav-item" data-page="mc_stats">
+                    <i class="fas fa-chart-line"></i> 性能监控
+                </div>
+                <div class="nav-item" data-page="mc_players">
+                    <i class="fas fa-users"></i> 在线玩家
+                </div>
+                <div class="nav-item" data-page="mc_console">
+                    <i class="fas fa-terminal"></i> 控制台
                 </div>
             </div>
 
@@ -1517,19 +1625,21 @@
                 </div>
             </div>
 
-            <!-- Minecraft 服务器页面 -->
-            <div id="mcPage" class="page" style="display: none;">
-                <div class="toolbar" style="flex-wrap: wrap; gap: 0.75rem;">
-                    <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-                        <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
-                        <button class="btn btn-warning" onclick="stopMinecraftServer()"><i class="fas fa-stop"></i> 停止</button>
-                        <button class="btn btn-danger" onclick="killMinecraftServer()"><i class="fas fa-bomb"></i> 强制终止</button>
-                        <span style="color: var(--gray);">状态: <strong id="mcStatus">未知</strong></span>
-                        <span style="color: var(--gray);">PID: <strong id="mcPid">-</strong></span>
-                    </div>
+            <div id="mcToolbar" class="toolbar" style="display: none; flex-wrap: wrap; gap: 0.75rem;">
+                <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                    <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
+                    <button class="btn btn-warning" onclick="stopMinecraftServer()"><i class="fas fa-stop"></i> 停止</button>
+                    <button class="btn btn-danger" onclick="killMinecraftServer()"><i class="fas fa-bomb"></i> 强制终止</button>
+                    <button class="btn btn-info" onclick="downloadMcLog()"><i class="fas fa-download"></i> 下载日志</button>
+                    <span style="color: var(--gray);">状态: <strong id="mcStatus">未知</strong></span>
+                    <span style="color: var(--gray);">PID: <strong id="mcPid">-</strong></span>
                 </div>
+            </div>
+
+            <!-- Minecraft 性能监控页面 -->
+            <div id="mc_statsPage" class="page" style="display: none;">
                 <div class="card">
-                    <h3>服务器配置</h3>
+                    <h3><i class="fas fa-chart-line"></i> 启动设置</h3>
                     <div class="form-group">
                         <label>完整启动命令</label>
                         <input type="text" id="mcConfigCommand" placeholder="例如: java -Xms1024M -Xmx2048M -jar server.jar nogui" />
@@ -1543,10 +1653,49 @@
                     </button>
                 </div>
                 <div class="card" style="margin-top: 1rem;">
-                    <h3>控制台输出</h3>
-                    <div style="margin-bottom: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-                        <input type="text" id="mcCommandInput" placeholder="输入控制台命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
-                        <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送命令</button>
+                    <h3><i class="fas fa-chart-line"></i> 性能监控</h3>
+                    <div id="mcStats" style="min-height: 100px;">
+                        <div class="mc-stats-row">
+                            <span class="mc-stats-label"><i class="fas fa-microchip"></i> CPU 使用</span>
+                            <strong id="mcCpu">-</strong>
+                        </div>
+                        <div class="mc-stats-row">
+                            <span class="mc-stats-label"><i class="fas fa-server"></i> 内存使用</span>
+                            <strong id="mcMemory">-</strong>
+                        </div>
+                        <div class="mc-stats-row">
+                            <span class="mc-stats-label"><i class="fas fa-sync-alt"></i> 自动重启</span>
+                            <strong id="mcAutoRestart">-</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Minecraft 在线玩家页面 -->
+            <div id="mc_playersPage" class="page" style="display: none;">
+                <div class="card">
+                    <h3><i class="fas fa-users"></i> 在线玩家</h3>
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <span id="mcPlayerCount" style="color: var(--gray);"><i class="fas fa-user-friends"></i> 0 / -</span>
+                        <button class="btn btn-secondary btn-sm" onclick="refreshMcPlayerList()"><i class="fas fa-sync-alt"></i> 刷新列表</button>
+                    </div>
+                    <div id="mcPlayerList" style="min-height: 100px;">
+                        <p class="mc-player-empty">暂无玩家在线</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Minecraft 控制台页面 -->
+            <div id="mc_consolePage" class="page" style="display: none;">
+                <div class="card">
+                    <h3><i class="fas fa-terminal"></i> 控制台</h3>
+                    <div class="form-group" style="margin-bottom: 0.75rem;">
+                        <div class="input-group" style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                            <input type="text" id="mcCommandInput" placeholder="输入命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
+                            <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送</button>
+                            <button class="btn btn-secondary" onclick="clearMcConsole()"><i class="fas fa-broom"></i> 清屏</button>
+                            <button class="btn btn-secondary" onclick="toggleMcAutoScroll()" id="mcAutoScrollBtn"><i class="fas fa-lock-open"></i> 自动滚动</button>
+                        </div>
                     </div>
                     <pre id="mcStdout" style="height: 360px; overflow-y: auto; background: #111827; color: #e5e7eb; padding: 1rem; border-radius: 0.75rem; white-space: pre-wrap; word-break: break-word;"></pre>
                 </div>

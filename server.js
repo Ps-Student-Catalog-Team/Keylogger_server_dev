@@ -2110,6 +2110,21 @@ function handleWebSocketConnection(ws, req) {
                     }
                     break;
 
+                case 'subscribe_mc':
+                    ws.subscribedMc = true;
+                    sendWebSocketJson(ws, { type: 'subscribe_mc_result', success: true });
+                    break;
+
+                case 'subscribe_mc_players':
+                    ws.subscribedMcPlayers = true;
+                    sendWebSocketJson(ws, { type: 'subscribe_mc_players_result', success: true });
+                    break;
+
+                case 'subscribe_mc_stats':
+                    ws.subscribedMcStats = true;
+                    sendWebSocketJson(ws, { type: 'subscribe_mc_stats_result', success: true });
+                    break;
+
                 case 'delete_client':
                     try {
                         await clientManager.deleteKnownClient(data.clientId);
@@ -3532,6 +3547,7 @@ async function shutdown() {
         
         wss = new WebSocket.Server({ server: serverInstance });
         wss.on('connection', handleWebSocketConnection);
+        mcController.setWebSocketServer(wss);
         
         serverInstance.listen(port, () => {
             logger.info(`${protocol.toUpperCase()} 服务运行在端口 ${port}`);

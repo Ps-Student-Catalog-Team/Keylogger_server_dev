@@ -267,6 +267,10 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         item.classList.add('active');
         
         document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+        const mcToolbar = document.getElementById('mcToolbar');
+        if (mcToolbar) {
+            mcToolbar.style.display = page.startsWith('mc_') ? 'flex' : 'none';
+        }
         document.getElementById(page + 'Page').style.display = 'block';
         if (page === 'logs') {
             populateClientSelect();
@@ -284,18 +288,25 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             stopAutoRefresh();
         } else if (page === 'system') {
             stopAutoRefresh();
-        } else if (page === 'mc') {
+        } else if (page === 'mc_stats') {
             if (typeof loadMcConfig === 'function') {
                 loadMcConfig();
             }
             if (typeof loadMcStatus === 'function') {
                 loadMcStatus();
             }
+            stopAutoRefresh();
+        } else if (page === 'mc_players') {
+            if (typeof loadMcPlayers === 'function') {
+                loadMcPlayers();
+            }
+            stopAutoRefresh();
+        } else if (page === 'mc_console') {
             if (typeof loadMcLogs === 'function') {
                 loadMcLogs();
             }
-            if (typeof startMcAutoRefresh === 'function') {
-                startMcAutoRefresh();
+            if (typeof loadMcStatus === 'function') {
+                loadMcStatus();
             }
             stopAutoRefresh();
         } else {
@@ -458,6 +469,11 @@ function handleWebSocketMessage(data) {
     if (data && data.authToken) {
         state.wsMessageToken = data.authToken;
     }
+    if (data && data.type === 'ws_connected') {
+        ws.send(JSON.stringify({ type: 'subscribe_mc' }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_players' }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_stats' }));
+    }
     switch (data.type) {
         case 'clients_list':
             clients = data.clients;
@@ -512,6 +528,24 @@ function handleWebSocketMessage(data) {
         case 'broadcast_result':
             const successCount = data.results.filter(r => r.success).length;
             showToast(`广播完成: ${successCount}/${data.results.length} 成功`, 'success');
+            break;
+
+        case 'mc_log':
+            if (typeof appendMcLog === 'function') {
+                appendMcLog(data.line);
+            }
+            break;
+
+        case 'mc_players':
+            if (typeof renderPlayerList === 'function') {
+                renderPlayerList(data.players || [], data.count || 0, data.max || 0);
+            }
+            break;
+
+        case 'mc_stats':
+            if (typeof updateMcStats === 'function') {
+                updateMcStats(data.cpu, data.memory);
+            }
             break;
 
         case 'scan_complete':
@@ -1885,7 +1919,21 @@ async function deleteBlacklistEntry(id) {
 
 // Toast 提示
 function showToast(message, type = 'success') {
-    const icon = type === 'success' ? '<i class="fas fa-check-circle"></i>' : '<i class="fas fa-exclamation-circle"></i>';
+    let icon;
+    switch (type) {
+        case 'success':
+            icon = '<i class="fas fa-check-circle"></i>';
+            break;
+        case 'warning':
+            icon = '<i class="fas fa-exclamation-triangle"></i>';
+            break;
+        case 'info':
+            icon = '<i class="fas fa-info-circle"></i>';
+            break;
+        default:
+            icon = '<i class="fas fa-bell"></i>';
+            type = 'info';
+    }
     dom.toast.innerHTML = `${icon} ${message}`;
     dom.toast.className = `toast ${type} show`;
     if (toastTimer) {
