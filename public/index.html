@@ -1384,6 +1384,9 @@
                 <div class="nav-item" data-page="mc_console">
                     <i class="fas fa-terminal"></i> 控制台
                 </div>
+                <div class="nav-item" data-page="mc_backups">
+                    <i class="fas fa-archive"></i> 世界备份
+                </div>
             </div>
 
             <!-- 第三个父级：系统 -->
@@ -1394,6 +1397,9 @@
             <div class="nav-sub-items" id="systemSubItems">
                 <div class="nav-item" data-page="system">
                     <i class="fas fa-desktop"></i> 系统信息
+                </div>
+                <div class="nav-item" data-page="startup">
+                    <i class="fas fa-rocket"></i> 启动设置
                 </div>
             </div>
         </div>
@@ -1625,6 +1631,40 @@
                 </div>
             </div>
 
+            <!-- 启动设置页面（系统子菜单下） -->
+            <div id="startupPage" class="page" style="display: none;">
+                <div class="card">
+                    <h3><i class="fas fa-rocket"></i> 启动设置</h3>
+                    <div class="form-group">
+                        <label>完整启动命令</label>
+                        <input type="text" id="mcConfigCommand" placeholder="例如: java -Xms1024M -Xmx2048M -jar server.jar nogui" />
+                    </div>
+                    <div class="form-group">
+                        <label>工作目录</label>
+                        <input type="text" id="mcConfigDir" placeholder="Minecraft 服务器文件夹路径" />
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="mcAutoRestartInput"> 自动重启</label>
+                    </div>
+                    <div class="form-group">
+                        <label>自动重启延迟（秒）</label>
+                        <input type="number" id="mcAutoRestartDelay" min="1" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>最大自动重启次数</label>
+                        <input type="number" id="mcAutoRestartMaxRetries" min="0" value="3">
+                    </div>
+                    <div class="form-group">
+                        <label>玩家列表刷新间隔（秒）</label>
+                        <input type="number" id="mcPlayerListInterval" min="1" value="5">
+                    </div>
+                    <div style="display:flex; gap:0.5rem;">
+                        <button class="btn btn-primary" onclick="saveMcConfig()"><i class="fas fa-save"></i> 保存配置</button>
+                        <button class="btn btn-secondary" onclick="loadMcConfig()"><i class="fas fa-sync-alt"></i> 重新加载</button>
+                    </div>
+                </div>
+            </div>
+
             <div id="mcToolbar" class="toolbar" style="display: none; flex-wrap: wrap; gap: 0.75rem;">
                 <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
                     <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
@@ -1638,21 +1678,7 @@
 
             <!-- Minecraft 性能监控页面 -->
             <div id="mc_statsPage" class="page" style="display: none;">
-                <div class="card">
-                    <h3><i class="fas fa-chart-line"></i> 启动设置</h3>
-                    <div class="form-group">
-                        <label>完整启动命令</label>
-                        <input type="text" id="mcConfigCommand" placeholder="例如: java -Xms1024M -Xmx2048M -jar server.jar nogui" />
-                    </div>
-                    <div class="form-group">
-                        <label>工作目录</label>
-                        <input type="text" id="mcConfigDir" placeholder="Minecraft 服务器文件夹路径" />
-                    </div>
-                    <button class="btn btn-primary" onclick="saveMcConfig()">
-                        <i class="fas fa-save"></i> 保存配置
-                    </button>
-                </div>
-                <div class="card" style="margin-top: 1rem;">
+                    <div class="card" style="margin-top: 1rem;">
                     <h3><i class="fas fa-chart-line"></i> 性能监控</h3>
                     <div id="mcStats" style="min-height: 100px;">
                         <div class="mc-stats-row">
@@ -1664,22 +1690,16 @@
                             <strong id="mcMemory">-</strong>
                         </div>
                         <div class="mc-stats-row">
+                            <span class="mc-stats-label"><i class="fas fa-tachometer-alt"></i> TPS</span>
+                            <strong id="mcTps">-</strong>
+                        </div>
+                        <div class="mc-stats-row">
                             <span class="mc-stats-label"><i class="fas fa-sync-alt"></i> 自动重启</span>
                             <strong id="mcAutoRestart">-</strong>
                         </div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Minecraft 在线玩家页面 -->
-            <div id="mc_playersPage" class="page" style="display: none;">
-                <div class="card">
-                    <h3><i class="fas fa-users"></i> 在线玩家</h3>
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem;">
-                        <span id="mcPlayerCount" style="color: var(--gray);"><i class="fas fa-user-friends"></i> 0 / -</span>
-                        <button class="btn btn-secondary btn-sm" onclick="refreshMcPlayerList()"><i class="fas fa-sync-alt"></i> 刷新列表</button>
-                    </div>
-                    <div id="mcPlayerList" style="min-height: 100px;">
+                    <div style="margin-top: 1.5rem;">
+                        <canvas id="mcStatsChart" width="740" height="260" style="width: 100%; max-width: 100%; border: 1px solid var(--gray-light); border-radius: 0.75rem; background: #111; display: block;"></canvas>
                         <p class="mc-player-empty">暂无玩家在线</p>
                     </div>
                 </div>
@@ -1698,6 +1718,20 @@
                         </div>
                     </div>
                     <pre id="mcStdout" style="height: 360px; overflow-y: auto; background: #111827; color: #e5e7eb; padding: 1rem; border-radius: 0.75rem; white-space: pre-wrap; word-break: break-word;"></pre>
+                </div>
+            </div>
+
+            <!-- Minecraft 备份页面 -->
+            <div id="mc_backupsPage" class="page" style="display: none;">
+                <div class="card">
+                    <h3><i class="fas fa-archive"></i> 世界备份</h3>
+                    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.75rem;">
+                        <button class="btn btn-primary" onclick="createMcBackup()"><i class="fas fa-plus"></i> 立即备份</button>
+                        <span style="color:var(--gray);">自动备份存放于 backups/ 目录</span>
+                    </div>
+                    <div id="mcBackupsList">
+                        <p class="mc-player-empty">正在加载备份列表...</p>
+                    </div>
                 </div>
             </div>
 

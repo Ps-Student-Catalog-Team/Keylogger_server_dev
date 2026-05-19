@@ -289,9 +289,6 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         } else if (page === 'system') {
             stopAutoRefresh();
         } else if (page === 'mc_stats') {
-            if (typeof loadMcConfig === 'function') {
-                loadMcConfig();
-            }
             if (typeof loadMcStatus === 'function') {
                 loadMcStatus();
             }
@@ -307,6 +304,16 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             }
             if (typeof loadMcStatus === 'function') {
                 loadMcStatus();
+            }
+            stopAutoRefresh();
+        } else if (page === 'mc_backups') {
+            if (typeof loadMcBackups === 'function') {
+                loadMcBackups();
+            }
+            stopAutoRefresh();
+        } else if (page === 'startup') {
+            if (typeof loadMcConfig === 'function') {
+                loadMcConfig();
             }
             stopAutoRefresh();
         } else {
@@ -544,7 +551,7 @@ function handleWebSocketMessage(data) {
 
         case 'mc_stats':
             if (typeof updateMcStats === 'function') {
-                updateMcStats(data.cpu, data.memory);
+                updateMcStats(data.cpu, data.memory, data.tps);
             }
             break;
 

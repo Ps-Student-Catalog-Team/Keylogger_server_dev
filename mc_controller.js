@@ -7,6 +7,8 @@ const { spawn } = require('child_process');
 const CONFIG_FILE = path.join(__dirname, 'mc_config.json');
 const LOG_DIR = path.join(__dirname, 'logs', 'mc');
 const LOG_FILE = path.join(LOG_DIR, 'latest.log');
+const BACKUP_DIR = path.join(__dirname, 'backups');
+const BACKUP_AUDIT = path.join(LOG_DIR, 'backups.log');
 const LOG_MAX_LINES = 1000;
 const WS_OPEN = 1;
 let mcProcess = null;
@@ -18,7 +20,7 @@ let config = {
   javaPath: 'java',
   jarPath: 'server.jar',
   minMemory: '1024M',
-  maxMemory: '2048M',
+  maxMemory: '4096M',
   additionalArgs: '',
   autostart: false,
   autoRestart: false,
@@ -31,6 +33,9 @@ let manualStopRequested = false;
 let playerListTimer = null;
 let statsTimer = null;
 let wsServer = null;
+let latestTps = null;
+let latestCpu = 0;
+let latestMemory = { used: 0, total: os.totalmem() };
 
 function setWebSocketServer(server) {
   wsServer = server;
@@ -39,6 +44,9 @@ function setWebSocketServer(server) {
 function ensureLogDirectory() {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(BACKUP_DIR)) {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
   }
 }
 
@@ -69,6 +77,10 @@ function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
 }
 
+function stripMcColorCodes(text) {
+  return String(text).replace(/§[0-9A-FK-OR]/gi, '').replace(/\u001b\[[0-9;]*m/g, '');
+}
+
 function parsePlayerList(stdoutLine) {
   const regex = /There are (\d+) of a max of (\d+) players online: ?(.*)/;
   const match = String(stdoutLine).match(regex);
@@ -79,6 +91,18 @@ function parsePlayerList(stdoutLine) {
     return { count, max, players };
   }
   return null;
+}
+
+function parseTpsValue(stdoutLine) {
+  if (!stdoutLine) return null;
+  const cleaned = stripMcColorCodes(stdoutLine);
+  const regex = /TPS(?:\s*from\s*last[^:]*:)?\s*([0-9]+(?:\.[0-9]+)?)/i;
+  const match = cleaned.match(regex);
+  if (match) {
+    return parseFloat(match[1]);
+  }
+  const fallback = cleaned.match(/([0-9]+(?:\.[0-9]+)?)\s*tps/i);
+  return fallback ? parseFloat(fallback[1]) : null;
 }
 
 function updatePlayerInfo(data) {
@@ -115,6 +139,12 @@ function pushLog(line) {
   if (parsed) {
     updatePlayerInfo(parsed);
   }
+
+  const tps = parseTpsValue(normalized);
+  if (tps !== null && !Number.isNaN(tps)) {
+    latestTps = tps;
+    broadcastMcPayload({ type: 'mc_stats', cpu: latestCpu, memory: latestMemory, tps: latestTps });
+  }
 }
 
 function getStatus() {
@@ -149,9 +179,12 @@ function startStatsPolling() {
     if (!mcProcess || !mcProcess.pid) return;
     const stats = await getMcProcessStats(mcProcess.pid);
     if (stats) {
-      broadcastMcPayload({ type: 'mc_stats', cpu: stats.cpu, memory: stats.memory });
+      latestCpu = stats.cpu;
+      latestMemory = stats.memory;
+      broadcastMcPayload({ type: 'mc_stats', cpu: latestCpu, memory: latestMemory, tps: latestTps });
     }
-  }, 10000);
+    sendCommand('tps');
+  }, 1000);
 }
 
 function stopStatsPolling() {
@@ -376,6 +409,118 @@ function setupRoutes(app) {
         res.status(500).json({ success: false, error: '下载日志失败' });
       }
     });
+  });
+
+  // Backups: create, list, download, restore
+  app.post('/api/mc/backup', async (req, res) => {
+    try {
+      ensureLogDirectory();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const name = `backup-${timestamp}.tar.gz`;
+      const dest = path.join(BACKUP_DIR, name);
+      const worldNames = ['world', 'world_nether', 'world_the_end'];
+      const cwd = config.workingDir || process.cwd();
+
+      // Build list of existing world dirs
+      const toArchive = worldNames.filter((d) => fs.existsSync(path.join(cwd, d))).map((d) => d);
+      if (toArchive.length === 0) {
+        return res.status(400).json({ success: false, error: '未找到任何 world 目录可备份' });
+      }
+
+      // Use tar on unix/windows (modern Windows has tar). Fallback to error if not available.
+      const tarArgs = ['-czf', dest, ...toArchive];
+      const tar = spawn('tar', tarArgs, { cwd, windowsHide: true });
+      let out = '';
+      tar.stdout.on('data', (d) => { out += d.toString(); });
+      tar.stderr.on('data', (d) => { out += d.toString(); });
+      tar.on('close', (code) => {
+        if (code === 0 && fs.existsSync(dest)) {
+          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+          return res.json({ success: true, name });
+        }
+        return res.status(500).json({ success: false, error: '备份失败: ' + out });
+      });
+      tar.on('error', (err) => {
+        return res.status(500).json({ success: false, error: '执行备份失败: ' + err.message });
+      });
+    } catch (e) {
+      console.error('创建备份失败', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get('/api/mc/backups', (req, res) => {
+    try {
+      ensureLogDirectory();
+      if (!fs.existsSync(BACKUP_DIR)) return res.json({ success: true, backups: [] });
+      const files = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.tar.gz') || f.endsWith('.zip'));
+      const list = files.map((f) => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { name: f, size: st.size, mtime: st.mtimeMs };
+      }).sort((a,b)=>b.mtime-a.mtime);
+      res.json({ success: true, backups: list });
+    } catch (e) {
+      console.error('列出备份失败', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get('/api/mc/backups/:name/download', (req, res) => {
+    try {
+      ensureLogDirectory();
+      const name = path.basename(req.params.name);
+      const file = path.join(BACKUP_DIR, name);
+      if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
+      res.download(file, name, (err) => {
+        if (err) res.status(500).json({ success: false, error: '下载失败' });
+      });
+    } catch (e) {
+      console.error('下载备份失败', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post('/api/mc/backups/:name/restore', async (req, res) => {
+    try {
+      ensureLogDirectory();
+      const name = path.basename(req.params.name);
+      const file = path.join(BACKUP_DIR, name);
+      if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
+      // Stop server first
+      if (mcProcess) {
+        stopMinecraft();
+        // wait up to 10s for process to exit
+        const waitStart = Date.now();
+        while (mcProcess && Date.now() - waitStart < 10000) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+        if (mcProcess) {
+          // still running, try kill
+          killMinecraft();
+        }
+      }
+      const cwd = config.workingDir || process.cwd();
+      // Extract tar.gz
+      const extract = spawn('tar', ['-xzf', file, '-C', cwd], { cwd, windowsHide: true });
+      let out = '';
+      extract.stdout.on('data', (d) => { out += d.toString(); });
+      extract.stderr.on('data', (d) => { out += d.toString(); });
+      extract.on('close', (code) => {
+        if (code === 0) {
+          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
+          // start server after restore
+          const started = startMinecraft();
+          return res.json({ success: true, restored: name, started });
+        }
+        return res.status(500).json({ success: false, error: '还原失败: ' + out });
+      });
+      extract.on('error', (err) => {
+        return res.status(500).json({ success: false, error: '执行还原失败: ' + err.message });
+      });
+    } catch (e) {
+      console.error('还原备份失败', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
   });
 }
 
