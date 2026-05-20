@@ -22,6 +22,11 @@ let config = {
   minMemory: '1024M',
   maxMemory: '4096M',
   additionalArgs: '',
+  backupDir: BACKUP_DIR,
+  autoBackupEnabled: false,
+  autoBackupCron: '',
+  backupRetentionCount: 7,
+  backupRetentionDays: 30,
   autostart: false,
   autoRestart: false,
   autoRestartDelaySeconds: 5,
@@ -29,6 +34,7 @@ let config = {
   playerListIntervalSeconds: 0,
 };
 let restartAttempts = 0;
+let lastStartTimestamp = 0;
 let manualStopRequested = false;
 let playerListTimer = null;
 let statsTimer = null;
@@ -41,12 +47,19 @@ function setWebSocketServer(server) {
   wsServer = server;
 }
 
-function ensureLogDirectory() {
+function getBackupDir() {
+  if (!config.backupDir) return BACKUP_DIR;
+  const base = config.workingDir || process.cwd();
+  return path.isAbsolute(config.backupDir) ? config.backupDir : path.resolve(base, config.backupDir);
+}
+
+function ensureMcDirectories() {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
   }
-  if (!fs.existsSync(BACKUP_DIR)) {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const backupDir = getBackupDir();
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
   }
 }
 
@@ -121,6 +134,12 @@ function updatePlayerInfo(data) {
     max: Number.isInteger(data.max) ? data.max : 0,
   };
   broadcastMcPayload({ type: 'mc_players', players: playerInfo.players, count: playerInfo.count, max: playerInfo.max });
+}
+
+function ensureLogDirectory() {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
 }
 
 function appendLogToFile(formatted) {
@@ -215,20 +234,28 @@ async function getMcProcessStats(pid) {
 
 function getWindowsProcessStats(pid) {
   return new Promise((resolve) => {
-    const child = spawn('wmic', ['path', 'Win32_PerfFormattedData_PerfProc_Process', 'where', `IDProcess=${pid}`, 'get', 'PercentProcessorTime,WorkingSetPrivate', '/format:list'], { windowsHide: true });
+    const query = `(IDProcess=${pid} OR ParentProcessId=${pid})`;
+    const child = spawn('wmic', ['path', 'Win32_PerfFormattedData_PerfProc_Process', 'where', query, 'get', 'PercentProcessorTime,WorkingSetPrivate,IDProcess', '/format:list'], { windowsHide: true });
     let output = '';
     child.stdout.on('data', (data) => { output += data.toString(); });
     child.on('close', () => {
-      const result = {};
-      output.split(/\r?\n/).forEach((line) => {
-        const [key, value] = line.split('=');
-        if (key && value !== undefined) {
-          result[key.trim()] = value.trim();
-        }
+      const entries = output.split(/\r?\n\r?\n/).map((block) => block.trim()).filter(Boolean);
+      let totalCpu = 0;
+      let totalUsed = 0;
+      entries.forEach((block) => {
+        const result = {};
+        block.split(/\r?\n/).forEach((line) => {
+          const [key, value] = line.split('=');
+          if (key && value !== undefined) {
+            result[key.trim()] = value.trim();
+          }
+        });
+        const cpu = parseFloat(result.PercentProcessorTime || '0');
+        const used = parseInt(result.WorkingSetPrivate || '0', 10);
+        totalCpu += Number.isNaN(cpu) ? 0 : cpu;
+        totalUsed += Number.isNaN(used) ? 0 : used;
       });
-      const cpu = parseFloat(result.PercentProcessorTime || '0');
-      const used = parseInt(result.WorkingSetPrivate || '0', 10);
-      resolve({ cpu: Number.isNaN(cpu) ? 0 : cpu, memory: { used, total: os.totalmem() } });
+      resolve({ cpu: totalCpu, memory: { used: totalUsed, total: os.totalmem() } });
     });
     child.on('error', () => resolve(null));
   });
@@ -236,31 +263,60 @@ function getWindowsProcessStats(pid) {
 
 function getUnixProcessStats(pid) {
   return new Promise((resolve) => {
-    const child = spawn('ps', ['-p', String(pid), '-o', '%cpu=', '-o', 'rss='], { windowsHide: true });
-    let output = '';
-    child.stdout.on('data', (data) => { output += data.toString(); });
-    child.on('close', () => {
-      const parts = output.trim().split(/\s+/);
-      if (parts.length >= 2) {
-        const cpu = parseFloat(parts[0] || '0');
-        const rss = parseInt(parts[1] || '0', 10) * 1024;
-        resolve({ cpu: Number.isNaN(cpu) ? 0 : cpu, memory: { used: rss, total: os.totalmem() } });
-      } else {
-        resolve(null);
-      }
+    const stats = [];
+    const gather = (processId, callback) => {
+      const proc = spawn('ps', ['-p', String(processId), '-o', '%cpu=', '-o', 'rss='], { windowsHide: true });
+      let output = '';
+      proc.stdout.on('data', (data) => { output += data.toString(); });
+      proc.on('close', () => {
+        const parts = output.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          stats.push({ cpu: parseFloat(parts[0] || '0'), rss: parseInt(parts[1] || '0', 10) * 1024 });
+        }
+        callback();
+      });
+      proc.on('error', () => callback());
+    };
+
+    const gatherChildren = (processId, callback) => {
+      const proc = spawn('ps', ['--ppid', String(processId), '-o', 'pid='], { windowsHide: true });
+      let output = '';
+      proc.stdout.on('data', (data) => { output += data.toString(); });
+      proc.on('close', () => {
+        const childPids = output.trim().split(/\s+/).filter(Boolean);
+        if (childPids.length === 0) return callback();
+        let remaining = childPids.length;
+        childPids.forEach((childPid) => {
+          gather(childPid, () => {
+            remaining -= 1;
+            if (remaining === 0) callback();
+          });
+        });
+      });
+      proc.on('error', () => callback());
+    };
+
+    gather(pid, () => {
+      gatherChildren(pid, () => {
+        const totalCpu = stats.reduce((sum, item) => sum + (Number.isFinite(item.cpu) ? item.cpu : 0), 0);
+        const totalUsed = stats.reduce((sum, item) => sum + (Number.isFinite(item.rss) ? item.rss : 0), 0);
+        resolve({ cpu: totalCpu, memory: { used: totalUsed, total: os.totalmem() } });
+      });
     });
-    child.on('error', () => resolve(null));
   });
 }
 
-function startMinecraft() {
+function startMinecraft(manualStart = true) {
   if (mcProcess) return false;
   const { fullCommand, workingDir } = config;
   if (!fullCommand || !fullCommand.trim()) return false;
 
   try {
     manualStopRequested = false;
-    restartAttempts = 0;
+    if (manualStart) {
+      restartAttempts = 0;
+    }
+    lastStartTimestamp = Date.now();
     mcProcess = spawn(fullCommand, [], { cwd: workingDir, shell: true, windowsHide: true, detached: false });
     pushLog(`启动命令: ${fullCommand}`);
 
@@ -268,18 +324,25 @@ function startMinecraft() {
     mcProcess.stderr.on('data', (data) => pushLog(`[STDERR] ${data.toString()}`));
     mcProcess.on('close', (code) => {
       pushLog(`Minecraft 服务器进程已退出，退出码: ${code}`);
+      const runDuration = Date.now() - lastStartTimestamp;
+      const restartResetMs = 30 * 1000;
+      if (runDuration > restartResetMs) {
+        restartAttempts = 0;
+      }
       mcProcess = null;
       stopPlayerListPolling();
       stopStatsPolling();
       if (config.autoRestart && !manualStopRequested) {
         if (restartAttempts < config.autoRestartMaxRetries) {
+          const delaySeconds = Math.max(1, Number(config.autoRestartDelaySeconds) || 5);
+          const backoff = Math.min(delaySeconds * Math.pow(2, restartAttempts), 60);
           restartAttempts += 1;
-          pushLog(`将在 ${config.autoRestartDelaySeconds} 秒后自动重启（${restartAttempts}/${config.autoRestartMaxRetries}）`);
+          pushLog(`将在 ${backoff} 秒后自动重启（${restartAttempts}/${config.autoRestartMaxRetries}）`);
           setTimeout(() => {
             if (!mcProcess) {
-              startMinecraft();
+              startMinecraft(false);
             }
-          }, config.autoRestartDelaySeconds * 1000);
+          }, backoff * 1000);
         } else {
           pushLog('已达到最大自动重启次数，不再继续重启');
         }
@@ -292,6 +355,7 @@ function startMinecraft() {
       stopStatsPolling();
     });
     startStatsPolling();
+    startPlayerListPolling();
     return true;
   } catch (e) {
     pushLog(`启动异常: ${e.message}`);
@@ -390,7 +454,7 @@ async function extractBackupArchive(file, cwd) {
 }
 
 function sendCommand(command) {
-  if (!mcProcess || mcProcess.stdin.destroyed) return false;
+  if (!mcProcess || !mcProcess.stdin || mcProcess.stdin.destroyed) return false;
   try {
     mcProcess.stdin.write(command + '\n');
     pushLog(`> ${command}`);
@@ -401,13 +465,88 @@ function sendCommand(command) {
   }
 }
 
+function cleanupOldBackups() {
+  try {
+    ensureMcDirectories();
+    const backupDir = getBackupDir();
+    const files = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
+    const list = files.map((name) => {
+      const filePath = path.join(backupDir, name);
+      const st = fs.statSync(filePath);
+      return { name, path: filePath, mtime: st.mtimeMs };
+    }).sort((a, b) => b.mtime - a.mtime);
+
+    const now = Date.now();
+    if (Number.isInteger(config.backupRetentionDays) && config.backupRetentionDays > 0) {
+      const cutoff = now - config.backupRetentionDays * 24 * 60 * 60 * 1000;
+      list.forEach((item) => {
+        if (item.mtime < cutoff) {
+          try {
+            fs.unlinkSync(item.path);
+            fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_AGE ${item.name}\n`);
+          } catch (e) {
+            console.error('清理旧备份失败:', e);
+          }
+        }
+      });
+    }
+
+    if (Number.isInteger(config.backupRetentionCount) && config.backupRetentionCount > 0) {
+      list.slice(config.backupRetentionCount).forEach((item) => {
+        try {
+          fs.unlinkSync(item.path);
+          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_COUNT ${item.name}\n`);
+        } catch (e) {
+          console.error('清理旧备份失败:', e);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('清理旧备份失败', e);
+  }
+}
+
+async function safeBackupWorlds(worldDirs, dest, cwd) {
+  let saveOffSent = false;
+  if (mcProcess) {
+    saveOffSent = sendCommand('save-off');
+    sendCommand('save-all');
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+
+  try {
+    await createBackupArchive(worldDirs, dest, cwd);
+  } finally {
+    if (saveOffSent && mcProcess) {
+      sendCommand('save-on');
+    }
+  }
+}
+
 function setupRoutes(app) {
   app.get('/api/mc/config', (req, res) => {
     res.json({ success: true, config });
   });
 
   app.post('/api/mc/config', (req, res) => {
-    const { fullCommand, workingDir, javaPath, jarPath, minMemory, maxMemory, additionalArgs, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds } = req.body;
+    const {
+      fullCommand,
+      workingDir,
+      javaPath,
+      jarPath,
+      minMemory,
+      maxMemory,
+      additionalArgs,
+      backupDir,
+      autoBackupEnabled,
+      autoBackupCron,
+      backupRetentionCount,
+      backupRetentionDays,
+      autoRestart,
+      autoRestartDelaySeconds,
+      autoRestartMaxRetries,
+      playerListIntervalSeconds,
+    } = req.body;
     if (fullCommand !== undefined) config.fullCommand = fullCommand;
     if (workingDir !== undefined) config.workingDir = workingDir;
     if (javaPath !== undefined) config.javaPath = javaPath;
@@ -415,11 +554,19 @@ function setupRoutes(app) {
     if (minMemory !== undefined) config.minMemory = minMemory;
     if (maxMemory !== undefined) config.maxMemory = maxMemory;
     if (additionalArgs !== undefined) config.additionalArgs = additionalArgs;
+    if (backupDir !== undefined) config.backupDir = backupDir;
+    if (autoBackupEnabled !== undefined) config.autoBackupEnabled = Boolean(autoBackupEnabled);
+    if (autoBackupCron !== undefined) config.autoBackupCron = autoBackupCron;
+    if (typeof backupRetentionCount === 'number') config.backupRetentionCount = backupRetentionCount;
+    if (typeof backupRetentionDays === 'number') config.backupRetentionDays = backupRetentionDays;
     if (autoRestart !== undefined) config.autoRestart = Boolean(autoRestart);
     if (typeof autoRestartDelaySeconds === 'number') config.autoRestartDelaySeconds = autoRestartDelaySeconds;
     if (typeof autoRestartMaxRetries === 'number') config.autoRestartMaxRetries = autoRestartMaxRetries;
     if (typeof playerListIntervalSeconds === 'number') config.playerListIntervalSeconds = playerListIntervalSeconds;
     saveConfig();
+    if (mcProcess) {
+      startPlayerListPolling();
+    }
     res.json({ success: true, message: '配置已保存' });
   });
 
@@ -479,10 +626,11 @@ function setupRoutes(app) {
   // Backups: create, list, download, restore
   app.post('/api/mc/backup', async (req, res) => {
     try {
-      ensureLogDirectory();
+      ensureMcDirectories();
+      const backupDir = getBackupDir();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const name = process.platform === 'win32' ? `backup-${timestamp}.zip` : `backup-${timestamp}.tar.gz`;
-      const dest = path.join(BACKUP_DIR, name);
+      const dest = path.join(backupDir, name);
       const worldNames = ['world', 'world_nether', 'world_the_end'];
       const cwd = config.workingDir || process.cwd();
 
@@ -491,12 +639,13 @@ function setupRoutes(app) {
         return res.status(400).json({ success: false, error: '未找到任何 world 目录可备份' });
       }
 
-      await createBackupArchive(toArchive, dest, cwd);
+      await safeBackupWorlds(toArchive, dest, cwd);
       if (!fs.existsSync(dest)) {
         throw new Error('备份文件创建失败');
       }
 
       fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+      cleanupOldBackups();
       res.json({ success: true, name });
     } catch (e) {
       console.error('创建备份失败', e);
@@ -506,11 +655,12 @@ function setupRoutes(app) {
 
   app.get('/api/mc/backups', (req, res) => {
     try {
-      ensureLogDirectory();
-      if (!fs.existsSync(BACKUP_DIR)) return res.json({ success: true, backups: [] });
-      const files = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.tar.gz') || f.endsWith('.zip'));
+      ensureMcDirectories();
+      const backupDir = getBackupDir();
+      if (!fs.existsSync(backupDir)) return res.json({ success: true, backups: [] });
+      const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.tar.gz') || f.endsWith('.zip'));
       const list = files.map((f) => {
-        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        const st = fs.statSync(path.join(backupDir, f));
         return { name: f, size: st.size, mtime: st.mtimeMs };
       }).sort((a,b)=>b.mtime-a.mtime);
       res.json({ success: true, backups: list });
@@ -522,9 +672,10 @@ function setupRoutes(app) {
 
   app.get('/api/mc/backups/:name/download', (req, res) => {
     try {
-      ensureLogDirectory();
+      ensureMcDirectories();
+      const backupDir = getBackupDir();
       const name = path.basename(req.params.name);
-      const file = path.join(BACKUP_DIR, name);
+      const file = path.join(backupDir, name);
       if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
       res.download(file, name, (err) => {
         if (err) res.status(500).json({ success: false, error: '下载失败' });
@@ -537,9 +688,10 @@ function setupRoutes(app) {
 
   app.post('/api/mc/backups/:name/restore', async (req, res) => {
     try {
-      ensureLogDirectory();
+      ensureMcDirectories();
+      const backupDir = getBackupDir();
       const name = path.basename(req.params.name);
-      const file = path.join(BACKUP_DIR, name);
+      const file = path.join(backupDir, name);
       if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
       if (mcProcess) {
         stopMinecraft();

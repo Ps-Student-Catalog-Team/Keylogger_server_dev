@@ -292,10 +292,16 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             if (typeof loadMcStatus === 'function') {
                 loadMcStatus();
             }
+            if (typeof loadMcConfig === 'function') {
+                loadMcConfig();
+            }
             stopAutoRefresh();
         } else if (page === 'mc_players') {
             if (typeof loadMcPlayers === 'function') {
                 loadMcPlayers();
+            }
+            if (typeof refreshMcPlayerList === 'function') {
+                refreshMcPlayerList();
             }
             stopAutoRefresh();
         } else if (page === 'mc_console') {

@@ -1,6 +1,10 @@
 let mcRefreshTimer = null;
+const COMMAND_HISTORY_KEY = 'mcCommandHistory';
+const COMMAND_HISTORY_MAX = 50;
 const commandHistory = [];
 let historyIndex = -1;
+let mcLogLines = [];
+let mcConsoleFilterText = '';
 let mcStatsChart = null;
 const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
 const MC_STATS_HISTORY_MAX = 240;
@@ -29,6 +33,14 @@ function formatMcColorCodes(text) {
     90: '#555555', 91: '#FF5555', 92: '#55FF55', 93: '#FFFF55',
     94: '#5555FF', 95: '#FF55FF', 96: '#55FFFF', 97: '#FFFFFF'
   };
+  const highlightLevels = {
+    '\[INFO\]': 'color: #3b82f6; font-weight: 600',
+    '\[WARN\]': 'color: #f59e0b; font-weight: 600',
+    '\[ERROR\]': 'color: #ef4444; font-weight: 600',
+    '\[SEVERE\]': 'color: #ef4444; font-weight: 600',
+    '\[DEBUG\]': 'color: #6b7280; font-weight: 600'
+  };
+
   let html = '';
   let currentStyle = { color: null, bold: false, italic: false, underline: false };
   const openSpan = () => {
@@ -90,6 +102,11 @@ function formatMcColorCodes(text) {
     html += escapeHtml(segment);
   });
   if (opened) html += '</span>';
+
+  Object.keys(highlightLevels).forEach((pattern) => {
+    const re = new RegExp(pattern, 'g');
+    html = html.replace(re, (match) => `<span style="${highlightLevels[pattern]}">${match}</span>`);
+  });
   return html;
 }
 
@@ -98,26 +115,54 @@ function formatMcLogs(logs) {
   return logs.map((line) => formatMcColorCodes(line)).join('<br>');
 }
 
+function persistCommandHistory() {
+  try {
+    window.localStorage.setItem(COMMAND_HISTORY_KEY, JSON.stringify(commandHistory.slice(-COMMAND_HISTORY_MAX)));
+  } catch (e) {
+    console.warn('无法保存命令历史:', e);
+  }
+}
+
+function loadCommandHistory() {
+  try {
+    const raw = window.localStorage.getItem(COMMAND_HISTORY_KEY);
+    if (!raw) return;
+    const items = JSON.parse(raw);
+    if (Array.isArray(items)) {
+      commandHistory.length = 0;
+      items.slice(-COMMAND_HISTORY_MAX).forEach((item) => {
+        if (typeof item === 'string' && item.trim()) {
+          commandHistory.push(item);
+        }
+      });
+      historyIndex = commandHistory.length;
+    }
+  } catch (e) {
+    console.warn('无法加载命令历史:', e);
+  }
+}
+
 function addToCommandHistory(command) {
   if (!command) return;
   const last = commandHistory[commandHistory.length - 1];
   if (last === command) return;
   commandHistory.push(command);
-  while (commandHistory.length > 20) {
+  while (commandHistory.length > COMMAND_HISTORY_MAX) {
     commandHistory.shift();
   }
   historyIndex = commandHistory.length;
+  persistCommandHistory();
 }
 
 let mcAutoScroll = true;
 
 function appendMcLog(line) {
-  const output = document.getElementById('mcStdout');
-  if (!output || typeof line !== 'string') return;
-  output.innerHTML += formatMcColorCodes(line) + '<br>';
-  if (mcAutoScroll) {
-    output.scrollTop = output.scrollHeight;
+  if (typeof line !== 'string') return;
+  mcLogLines.push(line);
+  if (mcLogLines.length > 1000) {
+    mcLogLines.shift();
   }
+  renderMcConsole();
 }
 
   // Backups UI
@@ -202,7 +247,31 @@ function appendMcLog(line) {
     }
   }
 
+function highlightConsoleLine(htmlLine, keyword) {
+  if (!keyword) return htmlLine;
+  const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return htmlLine.replace(new RegExp(`(${escapedKeyword})`, 'gi'), '<span style="background: rgba(245, 158, 11, 0.25); color: #fff;">$1</span>');
+}
+
+function renderMcConsole() {
+  const output = document.getElementById('mcStdout');
+  if (!output) return;
+  const filter = mcConsoleFilterText.trim().toLowerCase();
+  const lines = mcLogLines.filter((line) => {
+    if (!filter) return true;
+    return line.toLowerCase().includes(filter);
+  });
+  output.innerHTML = lines.map((line) => {
+    const html = formatMcColorCodes(line);
+    return filter ? highlightConsoleLine(html, filter) : html;
+  }).join('<br>');
+  if (mcAutoScroll) {
+    output.scrollTop = output.scrollHeight;
+  }
+}
+
 function clearMcConsole() {
+  mcLogLines = [];
   const output = document.getElementById('mcStdout');
   if (output) {
     output.innerHTML = '';
@@ -321,26 +390,48 @@ function setMcStatsRange(range) {
   updateMcStatsChart();
 }
 
+function toNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const num = parseFloat(String(value || '').replace(/[^0-9.+-eE]/g, ''));
+  return Number.isFinite(num) ? num : null;
+}
+
+function normalizeMemory(memo) {
+  if (!memo) return { used: null, total: null };
+  if (typeof memo === 'object') {
+    return { used: toNumber(memo.used), total: toNumber(memo.total) };
+  }
+  return { used: toNumber(memo), total: null };
+}
+
 function updateMcStats(cpu, memory, tps) {
   const cpuNode = document.getElementById('mcCpu');
   const memoryNode = document.getElementById('mcMemory');
   const tpsNode = document.getElementById('mcTps');
+  const cpuValue = toNumber(cpu);
+  const memoryValue = normalizeMemory(memory);
+  const tpsValue = toNumber(tps);
+
   if (cpuNode) {
-    cpuNode.textContent = `${cpu != null ? cpu.toFixed(1) : '-'} %`;
+    cpuNode.textContent = cpuValue != null ? `${cpuValue.toFixed(1)} %` : '-';
   }
   if (memoryNode) {
-    const usedMb = memory && memory.used ? Math.round(memory.used / 1024 / 1024) : null;
-    const totalMb = memory && memory.total ? Math.round(memory.total / 1024 / 1024) : null;
-    const formatMb = (mb) => mb == null ? '-' : mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb} MB`;
+    const formatMb = (mb) => {
+      if (mb == null) return '-';
+      if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+      return `${mb} MB`;
+    };
+    const usedMb = memoryValue.used != null ? Math.round(memoryValue.used / 1024 / 1024) : null;
+    const totalMb = memoryValue.total != null ? Math.round(memoryValue.total / 1024 / 1024) : null;
     memoryNode.textContent = `${formatMb(usedMb)} / ${formatMb(totalMb)}`;
   }
   if (tpsNode) {
-    tpsNode.textContent = typeof tps === 'number' ? tps.toFixed(2) : '-';
+    tpsNode.textContent = tpsValue != null ? tpsValue.toFixed(2) : '-';
   }
 
-  mcStatsHistory.cpu.push(cpu != null ? cpu : 0);
-  mcStatsHistory.memory.push(memory && memory.used ? memory.used / 1024 / 1024 : 0);
-  mcStatsHistory.tps.push(typeof tps === 'number' ? tps : null);
+  mcStatsHistory.cpu.push(cpuValue != null ? cpuValue : 0);
+  mcStatsHistory.memory.push(memoryValue.used != null ? memoryValue.used / 1024 / 1024 : 0);
+  mcStatsHistory.tps.push(tpsValue != null ? tpsValue : null);
   mcStatsHistory.labels.push(Date.now());
 
   while (mcStatsHistory.cpu.length > MC_STATS_HISTORY_MAX) {
@@ -416,8 +507,12 @@ async function refreshMcPlayerList() {
     const response = await fetch('/api/mc/players/refresh', { method: 'POST' });
     const data = await response.json();
     if (data.success) {
-      showToast('正在刷新玩家列表', 'success');
-      loadMcPlayers();
+      showToast(data.message || '玩家列表刷新中，请稍候', 'success');
+      if (Array.isArray(data.players)) {
+        renderPlayerList(data.players, data.count || 0, data.max || 0);
+      } else {
+        setTimeout(loadMcPlayers, 1500);
+      }
     } else {
       showToast(data.error || '刷新失败', 'error');
     }
@@ -458,6 +553,16 @@ async function loadMcConfig() {
     if (delay && typeof data.config.autoRestartDelaySeconds === 'number') delay.value = data.config.autoRestartDelaySeconds;
     const maxRetries = document.getElementById('mcAutoRestartMaxRetries');
     if (maxRetries && typeof data.config.autoRestartMaxRetries === 'number') maxRetries.value = data.config.autoRestartMaxRetries;
+    const backupDirInput = document.getElementById('mcBackupDir');
+    if (backupDirInput && typeof data.config.backupDir === 'string') backupDirInput.value = data.config.backupDir || '';
+    const autoBackupCheckbox = document.getElementById('mcAutoBackupEnable');
+    if (autoBackupCheckbox) autoBackupCheckbox.checked = !!data.config.autoBackupEnabled;
+    const autoBackupCron = document.getElementById('mcAutoBackupCron');
+    if (autoBackupCron && typeof data.config.autoBackupCron === 'string') autoBackupCron.value = data.config.autoBackupCron || '';
+    const retentionCount = document.getElementById('mcBackupRetentionCount');
+    if (retentionCount && typeof data.config.backupRetentionCount === 'number') retentionCount.value = data.config.backupRetentionCount;
+    const retentionDays = document.getElementById('mcBackupRetentionDays');
+    if (retentionDays && typeof data.config.backupRetentionDays === 'number') retentionDays.value = data.config.backupRetentionDays;
     const playerInt = document.getElementById('mcPlayerListInterval');
     if (playerInt && typeof data.config.playerListIntervalSeconds === 'number') playerInt.value = data.config.playerListIntervalSeconds;
     updateMcAutoRestartDisplay(!!data.config.autoRestart);
@@ -473,12 +578,17 @@ async function saveMcConfig() {
   const autoRestart = !!document.getElementById('mcAutoRestartInput')?.checked;
   const autoRestartDelaySeconds = parseInt(document.getElementById('mcAutoRestartDelay')?.value || '0', 10) || undefined;
   const autoRestartMaxRetries = parseInt(document.getElementById('mcAutoRestartMaxRetries')?.value || '0', 10) || undefined;
+  const backupDir = document.getElementById('mcBackupDir')?.value.trim();
+  const autoBackupEnabled = !!document.getElementById('mcAutoBackupEnable')?.checked;
+  const autoBackupCron = document.getElementById('mcAutoBackupCron')?.value.trim();
+  const backupRetentionCount = parseInt(document.getElementById('mcBackupRetentionCount')?.value || '0', 10) || undefined;
+  const backupRetentionDays = parseInt(document.getElementById('mcBackupRetentionDays')?.value || '0', 10) || undefined;
   const playerListIntervalSeconds = parseInt(document.getElementById('mcPlayerListInterval')?.value || '0', 10) || undefined;
   try {
     const response = await fetch('/api/mc/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fullCommand, workingDir, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds }),
+      body: JSON.stringify({ fullCommand, workingDir, backupDir, autoBackupEnabled, autoBackupCron, backupRetentionCount, backupRetentionDays, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds }),
     });
     const data = await response.json();
     if (data.success) {
@@ -519,11 +629,8 @@ async function loadMcLogs() {
       showToast(data.message || '获取 MC 日志失败', 'error');
       return;
     }
-    const output = document.getElementById('mcStdout');
-    if (output) {
-      output.innerHTML = formatMcLogs(data.logs);
-      output.scrollTop = output.scrollHeight;
-    }
+    mcLogLines = Array.isArray(data.logs) ? data.logs.slice(-1000) : [String(data.logs || '')];
+    renderMcConsole();
   } catch (error) {
     console.error('获取 MC 日志失败:', error);
   }
@@ -651,3 +758,13 @@ if (mcCommandInput) {
     }
   });
 }
+
+const mcConsoleFilter = document.getElementById('mcConsoleFilter');
+if (mcConsoleFilter) {
+  mcConsoleFilter.addEventListener('input', (event) => {
+    mcConsoleFilterText = event.target.value || '';
+    renderMcConsole();
+  });
+}
+
+loadCommandHistory();

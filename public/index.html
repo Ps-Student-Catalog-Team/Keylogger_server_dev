@@ -1713,6 +1713,11 @@
                         <input type="text" id="mcConfigDir" placeholder="Minecraft 服务器文件夹路径" />
                     </div>
                     <div class="form-group">
+                        <label>备份目录</label>
+                        <input type="text" id="mcBackupDir" placeholder="例如: backups 或 D:\\minecraft_backups" />
+                        <small style="color: var(--gray);">如果为空，将使用默认 backups/ 目录。</small>
+                    </div>
+                    <div class="form-group">
                         <label><input type="checkbox" id="mcAutoRestartInput"> 自动重启</label>
                     </div>
                     <div class="form-group">
@@ -1727,6 +1732,23 @@
                         <label>玩家列表刷新间隔（秒）</label>
                         <input type="number" id="mcPlayerListInterval" min="0" value="0">
                         <small style="color: var(--gray);">0 表示只在手动刷新时获取玩家列表</small>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="mcAutoBackupEnable"> 启用自动备份</label>
+                    </div>
+                    <div class="form-group">
+                        <label>自动备份时间</label>
+                        <input type="text" id="mcAutoBackupCron" placeholder="例如: 0 4 * * * (每天 4 点)" />
+                        <small style="color: var(--gray);">使用 cron 表达式配置自动备份时间</small>
+                    </div>
+                    <div class="form-group">
+                        <label>保留最近备份数量</label>
+                        <input type="number" id="mcBackupRetentionCount" min="1" value="7">
+                    </div>
+                    <div class="form-group">
+                        <label>保留备份天数</label>
+                        <input type="number" id="mcBackupRetentionDays" min="0" value="30">
+                        <small style="color: var(--gray);">0 表示仅按数量保留备份</small>
                     </div>
                     <div style="display:flex; gap:0.5rem;">
                         <button class="btn btn-primary" onclick="saveMcConfig()"><i class="fas fa-save"></i> 保存配置</button>
@@ -1802,6 +1824,7 @@
                     <h3><i class="fas fa-terminal"></i> 控制台</h3>
                     <div class="form-group" style="margin-bottom: 0.75rem;">
                         <div class="input-group" style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                            <input type="text" id="mcConsoleFilter" placeholder="过滤日志..." autocomplete="off" style="flex: 1; min-width: 220px;" />
                             <input type="text" id="mcCommandInput" placeholder="输入命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
                             <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送</button>
                             <button class="btn btn-secondary" onclick="clearMcConsole()"><i class="fas fa-broom"></i> 清屏</button>
@@ -1818,7 +1841,7 @@
                     <h3><i class="fas fa-archive"></i> 世界备份</h3>
                     <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.75rem;">
                         <button class="btn btn-primary" onclick="createMcBackup()"><i class="fas fa-plus"></i> 立即备份</button>
-                        <span style="color:var(--gray);">自动备份存放于 backups/ 目录</span>
+                        <span style="color:var(--gray);">自动备份存放于配置目录，手动备份将使用当前设置</span>
                     </div>
                     <div id="mcBackupsList">
                         <p class="mc-player-empty">正在加载备份列表...</p>
