@@ -20,9 +20,14 @@ function formatMcColorCodes(text) {
     '8': '#555555', '9': '#5555FF', 'a': '#55FF55', 'b': '#55FFFF',
     'c': '#FF5555', 'd': '#FF55FF', 'e': '#FFFF55', 'f': '#FFFFFF'
   };
+  const ansiColorMap = {
+    30: '#000000', 31: '#AA0000', 32: '#00AA00', 33: '#AA5500',
+    34: '#0000AA', 35: '#AA00AA', 36: '#00AAAA', 37: '#AAAAAA',
+    90: '#555555', 91: '#FF5555', 92: '#55FF55', 93: '#FFFF55',
+    94: '#5555FF', 95: '#FF55FF', 96: '#55FFFF', 97: '#FFFFFF'
+  };
   let html = '';
   let currentStyle = { color: null, bold: false, italic: false, underline: false };
-  const segments = text.split(/(§[0-9A-FK-OR])/gi);
   const openSpan = () => {
     const styles = [];
     if (currentStyle.color) styles.push(`color: ${currentStyle.color}`);
@@ -31,9 +36,31 @@ function formatMcColorCodes(text) {
     if (currentStyle.underline) styles.push('text-decoration: underline');
     return styles.length ? `<span style="${styles.join('; ')}">` : '<span>';
   };
+  const segments = String(text).split(/(\u001b\[[0-9;]*m|§[0-9A-FK-OR])/gi);
   let opened = false;
   segments.forEach((segment) => {
     if (!segment) return;
+    const ansiMatch = segment.match(/^\u001b\[([0-9;]*)m$/);
+    if (ansiMatch) {
+      if (opened) html += '</span>';
+      const codes = ansiMatch[1].split(';').map(Number).filter((n) => !Number.isNaN(n));
+      codes.forEach((code) => {
+        if (code === 0) {
+          currentStyle = { color: null, bold: false, italic: false, underline: false };
+        } else if (code === 1) {
+          currentStyle.bold = true;
+        } else if (code === 3) {
+          currentStyle.italic = true;
+        } else if (code === 4) {
+          currentStyle.underline = true;
+        } else if (ansiColorMap[code]) {
+          currentStyle.color = ansiColorMap[code];
+        }
+      });
+      html += openSpan();
+      opened = true;
+      return;
+    }
     if (/^§[0-9A-FK-OR]$/i.test(segment)) {
       if (opened) html += '</span>';
       const code = segment[1].toLowerCase();
@@ -47,8 +74,6 @@ function formatMcColorCodes(text) {
         currentStyle.italic = true;
       } else if (code === 'n') {
         currentStyle.underline = true;
-      } else if (code === 'm' || code === 'k') {
-        // ignore strikethrough and obfuscated
       }
       html += openSpan();
       opened = true;
@@ -204,11 +229,12 @@ function drawMcStatsChart() {
   if (len < 2) return;
   const maxCpu = 100;
   const maxMem = Math.max(...mcStatsHistory.memory.map(m => m || 0), 1);
-  const maxTps = Math.max(...mcStatsHistory.tps.map(t => t || 0), 20);
+  const maxTps = mcStatsHistory.tps.length > 0 ? Math.max(...mcStatsHistory.tps.map(t => t || 0), 20) : 20;
   const graphWidth = width - padding * 2;
   const graphHeight = height - padding * 2;
   const xStep = graphWidth / (Math.max(len - 1, 1));
   const drawLine = (values, color, scaleFn) => {
+    if (!values || values.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -220,7 +246,7 @@ function drawMcStatsChart() {
     });
     ctx.stroke();
   };
-  ctx.strokeStyle = '#444';
+  ctx.strokeStyle = '#ccc';
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = padding + (graphHeight / 4) * i;
@@ -228,17 +254,32 @@ function drawMcStatsChart() {
     ctx.moveTo(padding, y);
     ctx.lineTo(width - padding, y);
     ctx.stroke();
+    const labelValue = Math.round(maxCpu - (maxCpu / 4) * i);
+    ctx.fillStyle = '#999';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(`${labelValue}%`, 6, y + 4);
   }
   drawLine(mcStatsHistory.cpu, '#39b5e0', (value) => (value || 0) / maxCpu);
   drawLine(mcStatsHistory.memory, '#4ade80', (value) => (value || 0) / maxMem);
-  drawLine(mcStatsHistory.tps, '#f59e0b', (value) => Math.min((value || 0) / maxTps, 1));
-  ctx.fillStyle = '#eee';
+  if (mcStatsHistory.tps.length > 0) {
+    drawLine(mcStatsHistory.tps, '#f59e0b', (value) => Math.min((value || 0) / maxTps, 1));
+  }
+  ctx.fillStyle = '#222';
   ctx.font = '12px sans-serif';
-  ctx.fillText(`CPU %`, padding + 4, padding - 10);
+  ctx.fillText(`CPU`, padding + 4, padding - 10);
   ctx.fillStyle = '#4ade80';
   ctx.fillText(`MEM`, padding + 60, padding - 10);
-  ctx.fillStyle = '#f59e0b';
-  ctx.fillText(`TPS`, padding + 110, padding - 10);
+  if (mcStatsHistory.tps.length > 0) {
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillText(`TPS`, padding + 110, padding - 10);
+  }
+  ctx.fillStyle = '#555';
+  ctx.font = '10px sans-serif';
+  ctx.fillText(`CPU ${mcStatsHistory.cpu[mcStatsHistory.cpu.length-1]?.toFixed(1) ?? '-'}%`, padding, height - 8);
+  ctx.fillText(`MEM ${mcStatsHistory.memory[mcStatsHistory.memory.length-1]?.toFixed(1) ?? '-'} MB`, padding + 180, height - 8);
+  if (mcStatsHistory.tps.length > 0) {
+    ctx.fillText(`TPS ${mcStatsHistory.tps[mcStatsHistory.tps.length-1]?.toFixed(2) ?? '-'}`, padding + 360, height - 8);
+  }
 }
 
 function updateMcStats(cpu, memory, tps) {
@@ -258,7 +299,9 @@ function updateMcStats(cpu, memory, tps) {
   }
   mcStatsHistory.cpu.push(cpu != null ? cpu : 0);
   mcStatsHistory.memory.push(memory && memory.used ? memory.used / 1024 / 1024 : 0);
-  mcStatsHistory.tps.push(typeof tps === 'number' ? tps : 0);
+  if (typeof tps === 'number') {
+    mcStatsHistory.tps.push(tps);
+  }
   if (mcStatsHistory.cpu.length > MC_STATS_HISTORY_MAX) mcStatsHistory.cpu.shift();
   if (mcStatsHistory.memory.length > MC_STATS_HISTORY_MAX) mcStatsHistory.memory.shift();
   if (mcStatsHistory.tps.length > MC_STATS_HISTORY_MAX) mcStatsHistory.tps.shift();
@@ -268,8 +311,12 @@ function updateMcStats(cpu, memory, tps) {
 function renderPlayerList(players, count, max) {
   const container = document.getElementById('mcPlayerList');
   const countLabel = document.getElementById('mcPlayerCount');
+  const maxLabel = document.getElementById('mcPlayerMax');
   if (countLabel) {
-    countLabel.textContent = `${count || (players ? players.length : 0)} / ${max || '-'}`;
+    countLabel.textContent = `${count || (players ? players.length : 0)}`;
+  }
+  if (maxLabel) {
+    maxLabel.textContent = `${max || '-'}`;
   }
   if (!container) return;
 
@@ -368,6 +415,7 @@ async function loadMcConfig() {
     if (maxRetries && typeof data.config.autoRestartMaxRetries === 'number') maxRetries.value = data.config.autoRestartMaxRetries;
     const playerInt = document.getElementById('mcPlayerListInterval');
     if (playerInt && typeof data.config.playerListIntervalSeconds === 'number') playerInt.value = data.config.playerListIntervalSeconds;
+    updateMcAutoRestartDisplay(!!data.config.autoRestart);
   } catch (error) {
     console.error('加载 MC 配置失败:', error);
     showToast('加载 MC 配置失败', 'error');
@@ -384,11 +432,13 @@ async function saveMcConfig() {
   try {
     const response = await fetch('/api/mc/config', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fullCommand, workingDir, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds }),
     });
     const data = await response.json();
     if (data.success) {
       showToast('MC 配置已保存', 'success');
+      updateMcAutoRestartDisplay(autoRestart);
     } else {
       showToast(data.error || data.message || '保存 MC 配置失败', 'error');
     }
@@ -426,11 +476,18 @@ async function loadMcLogs() {
     }
     const output = document.getElementById('mcStdout');
     if (output) {
-      output.textContent = formatMcLogs(data.logs);
+      output.innerHTML = formatMcLogs(data.logs);
       output.scrollTop = output.scrollHeight;
     }
   } catch (error) {
     console.error('获取 MC 日志失败:', error);
+  }
+}
+
+function updateMcAutoRestartDisplay(enabled) {
+  const node = document.getElementById('mcAutoRestart');
+  if (node) {
+    node.textContent = enabled ? '已启用' : '已禁用';
   }
 }
 
@@ -506,6 +563,7 @@ async function sendMcCommand(commandInput) {
   try {
     const response = await fetch('/api/mc/command', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command }),
     });
     const data = await response.json();

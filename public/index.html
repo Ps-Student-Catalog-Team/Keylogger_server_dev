@@ -117,6 +117,7 @@
             border-right: 1px solid var(--gray-light);
             padding: 1.5rem 1rem;
             box-shadow: var(--shadow);
+            overflow-y: auto;
         }
 
         .sidebar h3 {
@@ -1310,6 +1311,8 @@
         .nav-sub-items {
             display: none;
             padding-left: 1rem;
+            max-height: calc(100vh - 260px);
+            overflow-y: auto;
         }
         .nav-sub-items.open {
             display: block;
@@ -1656,7 +1659,8 @@
                     </div>
                     <div class="form-group">
                         <label>玩家列表刷新间隔（秒）</label>
-                        <input type="number" id="mcPlayerListInterval" min="1" value="5">
+                        <input type="number" id="mcPlayerListInterval" min="0" value="0">
+                        <small style="color: var(--gray);">0 表示只在手动刷新时获取玩家列表</small>
                     </div>
                     <div style="display:flex; gap:0.5rem;">
                         <button class="btn btn-primary" onclick="saveMcConfig()"><i class="fas fa-save"></i> 保存配置</button>
@@ -1690,17 +1694,26 @@
                             <strong id="mcMemory">-</strong>
                         </div>
                         <div class="mc-stats-row">
-                            <span class="mc-stats-label"><i class="fas fa-tachometer-alt"></i> TPS</span>
-                            <strong id="mcTps">-</strong>
-                        </div>
-                        <div class="mc-stats-row">
                             <span class="mc-stats-label"><i class="fas fa-sync-alt"></i> 自动重启</span>
                             <strong id="mcAutoRestart">-</strong>
                         </div>
                     </div>
                     <div style="margin-top: 1.5rem;">
-                        <canvas id="mcStatsChart" width="740" height="260" style="width: 100%; max-width: 100%; border: 1px solid var(--gray-light); border-radius: 0.75rem; background: #111; display: block;"></canvas>
-                        <p class="mc-player-empty">暂无玩家在线</p>
+                        <canvas id="mcStatsChart" width="740" height="260" style="width: 100%; max-width: 100%; border: 1px solid var(--gray-light); border-radius: 0.75rem; background: transparent; display: block;"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Minecraft 在线玩家页面 -->
+            <div id="mc_playersPage" class="page" style="display: none;">
+                <div class="card">
+                    <h3><i class="fas fa-users"></i> 在线玩家</h3>
+                    <div class="toolbar" style="justify-content: flex-start; gap: 0.75rem;">
+                        <button class="btn btn-primary" onclick="refreshMcPlayerList()"><i class="fas fa-sync-alt"></i> 刷新玩家列表</button>
+                        <span style="color: var(--gray);">在线玩家: <strong id="mcPlayerCount">0</strong> / <strong id="mcPlayerMax">-</strong></span>
+                    </div>
+                    <div id="mcPlayerList" style="min-height: 140px; margin-top: 1rem;">
+                        <p class="mc-player-empty">请点击“刷新玩家列表”以获取当前在线玩家。</p>
                     </div>
                 </div>
             </div>

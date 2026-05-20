@@ -26,7 +26,7 @@ let config = {
   autoRestart: false,
   autoRestartDelaySeconds: 5,
   autoRestartMaxRetries: 3,
-  playerListIntervalSeconds: 5,
+  playerListIntervalSeconds: 0,
 };
 let restartAttempts = 0;
 let manualStopRequested = false;
@@ -82,14 +82,22 @@ function stripMcColorCodes(text) {
 }
 
 function parsePlayerList(stdoutLine) {
-  const regex = /There are (\d+) of a max of (\d+) players online: ?(.*)/;
-  const match = String(stdoutLine).match(regex);
-  if (match) {
-    const count = parseInt(match[1], 10);
-    const max = parseInt(match[2], 10);
-    const players = match[3] ? match[3].split(', ').map((p) => p.trim()).filter(Boolean) : [];
-    return { count, max, players };
+  const line = stripMcColorCodes(String(stdoutLine || '')).trim();
+  const patterns = [
+    /There are (\d+) of a max of (\d+) players online: ?(.*)/i,
+    /当前在线\s*(\d+)\s*名?玩家[\s\S]*?最大\s*(\d+)\s*名?在线:?\s*(.*)/,
+  ];
+
+  for (const regex of patterns) {
+    const match = line.match(regex);
+    if (match) {
+      const count = parseInt(match[1], 10);
+      const max = parseInt(match[2], 10);
+      const players = match[3] ? match[3].split(',').map((p) => p.trim()).filter(Boolean) : [];
+      return { count, max, players };
+    }
   }
+
   return null;
 }
 
@@ -183,7 +191,6 @@ function startStatsPolling() {
       latestMemory = stats.memory;
       broadcastMcPayload({ type: 'mc_stats', cpu: latestCpu, memory: latestMemory, tps: latestTps });
     }
-    sendCommand('tps');
   }, 1000);
 }
 
@@ -284,7 +291,6 @@ function startMinecraft() {
       stopPlayerListPolling();
       stopStatsPolling();
     });
-    startPlayerListPolling();
     startStatsPolling();
     return true;
   } catch (e) {
@@ -315,13 +321,72 @@ function killMinecraft() {
   try {
     manualStopRequested = true;
     stopPlayerListPolling();
-    mcProcess.kill('SIGTERM');
+    stopStatsPolling();
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/pid', String(mcProcess.pid), '/f', '/t'], { windowsHide: true });
+    } else {
+      mcProcess.kill('SIGTERM');
+    }
     pushLog('已强制终止 Minecraft 服务器进程');
     return true;
   } catch (e) {
     pushLog(`强制终止失败: ${e.message}`);
     return false;
   }
+}
+
+function runChildProcess(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true, ...options });
+    let output = '';
+    child.stdout.on('data', (data) => { output += data.toString(); });
+    child.stderr.on('data', (data) => { output += data.toString(); });
+    child.on('close', (code) => {
+      if (code === 0) resolve(output);
+      else reject(new Error(output || `退出码 ${code}`));
+    });
+    child.on('error', (err) => reject(err));
+  });
+}
+
+async function createBackupArchive(worldDirs, dest, cwd) {
+  if (process.platform === 'win32') {
+    const quotedPaths = worldDirs.map((dir) => `'${dir.replace(/'/g, "''")}'`).join(', ');
+    const quotedDest = dest.replace(/'/g, "''");
+    try {
+      await runChildProcess('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Compress-Archive -Path ${quotedPaths} -DestinationPath '${quotedDest}' -Force`
+      ], { cwd });
+      return;
+    } catch (archiveError) {
+      // 如果 PowerShell 压缩失败，则尝试使用 tar 的自动扩展模式创建 ZIP
+      await runChildProcess('tar', ['-a', '-cf', dest, ...worldDirs], { cwd });
+      return;
+    }
+  }
+  await runChildProcess('tar', ['-czf', dest, ...worldDirs], { cwd });
+}
+
+async function extractBackupArchive(file, cwd) {
+  if (file.toLowerCase().endsWith('.zip')) {
+    if (process.platform === 'win32') {
+      const quotedFile = file.replace(/'/g, "''");
+      const quotedCwd = cwd.replace(/'/g, "''");
+      await runChildProcess('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Expand-Archive -Path '${quotedFile}' -DestinationPath '${quotedCwd}' -Force`
+      ], { cwd });
+      return;
+    }
+    await runChildProcess('unzip', ['-o', file, '-d', cwd], { cwd });
+    return;
+  }
+  await runChildProcess('tar', ['-xzf', file, '-C', cwd], { cwd });
 }
 
 function sendCommand(command) {
@@ -416,33 +481,23 @@ function setupRoutes(app) {
     try {
       ensureLogDirectory();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const name = `backup-${timestamp}.tar.gz`;
+      const name = process.platform === 'win32' ? `backup-${timestamp}.zip` : `backup-${timestamp}.tar.gz`;
       const dest = path.join(BACKUP_DIR, name);
       const worldNames = ['world', 'world_nether', 'world_the_end'];
       const cwd = config.workingDir || process.cwd();
 
-      // Build list of existing world dirs
       const toArchive = worldNames.filter((d) => fs.existsSync(path.join(cwd, d))).map((d) => d);
       if (toArchive.length === 0) {
         return res.status(400).json({ success: false, error: '未找到任何 world 目录可备份' });
       }
 
-      // Use tar on unix/windows (modern Windows has tar). Fallback to error if not available.
-      const tarArgs = ['-czf', dest, ...toArchive];
-      const tar = spawn('tar', tarArgs, { cwd, windowsHide: true });
-      let out = '';
-      tar.stdout.on('data', (d) => { out += d.toString(); });
-      tar.stderr.on('data', (d) => { out += d.toString(); });
-      tar.on('close', (code) => {
-        if (code === 0 && fs.existsSync(dest)) {
-          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
-          return res.json({ success: true, name });
-        }
-        return res.status(500).json({ success: false, error: '备份失败: ' + out });
-      });
-      tar.on('error', (err) => {
-        return res.status(500).json({ success: false, error: '执行备份失败: ' + err.message });
-      });
+      await createBackupArchive(toArchive, dest, cwd);
+      if (!fs.existsSync(dest)) {
+        throw new Error('备份文件创建失败');
+      }
+
+      fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+      res.json({ success: true, name });
     } catch (e) {
       console.error('创建备份失败', e);
       res.status(500).json({ success: false, error: e.message });
@@ -486,37 +541,21 @@ function setupRoutes(app) {
       const name = path.basename(req.params.name);
       const file = path.join(BACKUP_DIR, name);
       if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
-      // Stop server first
       if (mcProcess) {
         stopMinecraft();
-        // wait up to 10s for process to exit
         const waitStart = Date.now();
         while (mcProcess && Date.now() - waitStart < 10000) {
           await new Promise(r => setTimeout(r, 200));
         }
         if (mcProcess) {
-          // still running, try kill
           killMinecraft();
         }
       }
       const cwd = config.workingDir || process.cwd();
-      // Extract tar.gz
-      const extract = spawn('tar', ['-xzf', file, '-C', cwd], { cwd, windowsHide: true });
-      let out = '';
-      extract.stdout.on('data', (d) => { out += d.toString(); });
-      extract.stderr.on('data', (d) => { out += d.toString(); });
-      extract.on('close', (code) => {
-        if (code === 0) {
-          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
-          // start server after restore
-          const started = startMinecraft();
-          return res.json({ success: true, restored: name, started });
-        }
-        return res.status(500).json({ success: false, error: '还原失败: ' + out });
-      });
-      extract.on('error', (err) => {
-        return res.status(500).json({ success: false, error: '执行还原失败: ' + err.message });
-      });
+      await extractBackupArchive(file, cwd);
+      fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
+      const started = startMinecraft();
+      res.json({ success: true, restored: name, started });
     } catch (e) {
       console.error('还原备份失败', e);
       res.status(500).json({ success: false, error: e.message });
