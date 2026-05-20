@@ -1,8 +1,11 @@
 let mcRefreshTimer = null;
 const commandHistory = [];
 let historyIndex = -1;
-const mcStatsHistory = { cpu: [], memory: [], tps: [] };
-const MC_STATS_HISTORY_MAX = 80;
+let mcStatsChart = null;
+const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
+const MC_STATS_HISTORY_MAX = 240;
+const MC_STATS_CHART_RANGES = { '5m': 20, '15m': 60, '1h': 120 };
+let mcStatsChartRange = '15m';
 
 function escapeHtml(value) {
   return String(value || '')
@@ -215,71 +218,107 @@ function toggleMcAutoScroll() {
   showToast(mcAutoScroll ? '自动滚动已启用' : '已锁定滚动', 'info');
 }
 
-function drawMcStatsChart() {
+function formatMcStatsTimeLabel(timestamp) {
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function initMcStatsChart() {
   const canvas = document.getElementById('mcStatsChart');
-  if (!canvas || !canvas.getContext) return;
+  if (!canvas || !canvas.getContext || typeof Chart === 'undefined') return;
   const ctx = canvas.getContext('2d');
-  const width = canvas.width;
-  const height = canvas.height;
-  const padding = 30;
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, width, height);
-  const len = Math.max(mcStatsHistory.cpu.length, mcStatsHistory.memory.length, mcStatsHistory.tps.length);
-  if (len < 2) return;
-  const maxCpu = 100;
-  const maxMem = Math.max(...mcStatsHistory.memory.map(m => m || 0), 1);
-  const maxTps = mcStatsHistory.tps.length > 0 ? Math.max(...mcStatsHistory.tps.map(t => t || 0), 20) : 20;
-  const graphWidth = width - padding * 2;
-  const graphHeight = height - padding * 2;
-  const xStep = graphWidth / (Math.max(len - 1, 1));
-  const drawLine = (values, color, scaleFn) => {
-    if (!values || values.length < 2) return;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    values.forEach((value, index) => {
-      const x = padding + index * xStep;
-      const y = padding + graphHeight - scaleFn(value) * graphHeight;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  };
-  ctx.strokeStyle = '#ccc';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = padding + (graphHeight / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(padding, y);
-    ctx.lineTo(width - padding, y);
-    ctx.stroke();
-    const labelValue = Math.round(maxCpu - (maxCpu / 4) * i);
-    ctx.fillStyle = '#999';
-    ctx.font = '11px sans-serif';
-    ctx.fillText(`${labelValue}%`, 6, y + 4);
-  }
-  drawLine(mcStatsHistory.cpu, '#39b5e0', (value) => (value || 0) / maxCpu);
-  drawLine(mcStatsHistory.memory, '#4ade80', (value) => (value || 0) / maxMem);
-  if (mcStatsHistory.tps.length > 0) {
-    drawLine(mcStatsHistory.tps, '#f59e0b', (value) => Math.min((value || 0) / maxTps, 1));
-  }
-  ctx.fillStyle = '#222';
-  ctx.font = '12px sans-serif';
-  ctx.fillText(`CPU`, padding + 4, padding - 10);
-  ctx.fillStyle = '#4ade80';
-  ctx.fillText(`MEM`, padding + 60, padding - 10);
-  if (mcStatsHistory.tps.length > 0) {
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillText(`TPS`, padding + 110, padding - 10);
-  }
-  ctx.fillStyle = '#555';
-  ctx.font = '10px sans-serif';
-  ctx.fillText(`CPU ${mcStatsHistory.cpu[mcStatsHistory.cpu.length-1]?.toFixed(1) ?? '-'}%`, padding, height - 8);
-  ctx.fillText(`MEM ${mcStatsHistory.memory[mcStatsHistory.memory.length-1]?.toFixed(1) ?? '-'} MB`, padding + 180, height - 8);
-  if (mcStatsHistory.tps.length > 0) {
-    ctx.fillText(`TPS ${mcStatsHistory.tps[mcStatsHistory.tps.length-1]?.toFixed(2) ?? '-'}`, padding + 360, height - 8);
-  }
+  const gradientCpu = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradientCpu.addColorStop(0, 'rgba(59, 130, 246, 0.28)');
+  gradientCpu.addColorStop(1, 'rgba(59, 130, 246, 0.04)');
+  const gradientMem = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradientMem.addColorStop(0, 'rgba(16, 185, 129, 0.24)');
+  gradientMem.addColorStop(1, 'rgba(16, 185, 129, 0.04)');
+  const gradientTps = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradientTps.addColorStop(0, 'rgba(245, 158, 11, 0.2)');
+  gradientTps.addColorStop(1, 'rgba(245, 158, 11, 0.04)');
+
+  mcStatsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'CPU %', data: [], backgroundColor: gradientCpu, borderColor: '#3b82f6', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
+        { label: '内存 MB', data: [], backgroundColor: gradientMem, borderColor: '#10b981', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
+        { label: 'TPS', data: [], backgroundColor: gradientTps, borderColor: '#f59e0b', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y1' }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle' } },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            label(context) {
+              const value = context.parsed.y;
+              if (context.dataset.yAxisID === 'y1') return `${context.dataset.label}: ${value ?? '-'} `;
+              return `${context.dataset.label}: ${value ?? '-'}${context.dataset.label === 'CPU %' ? '%' : ''}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            tooltipFormat: 'HH:mm:ss',
+            unit: 'minute',
+            displayFormats: { minute: 'HH:mm' }
+          },
+          grid: { color: 'rgba(107, 117, 128, 0.12)' }
+        },
+        y: {
+          type: 'linear',
+          position: 'left',
+          title: { display: true, text: 'CPU (%) / 内存 (MB)' },
+          beginAtZero: true,
+          grid: { color: 'rgba(107, 117, 128, 0.12)' }
+        },
+        y1: {
+          type: 'linear',
+          position: 'right',
+          title: { display: true, text: 'TPS' },
+          beginAtZero: true,
+          grid: { drawOnChartArea: false, color: 'rgba(107, 117, 128, 0.12)' },
+          min: 0,
+          max: 20
+        }
+      }
+    }
+  });
+}
+
+function getMcStatsDisplayCount() {
+  return MC_STATS_CHART_RANGES[mcStatsChartRange] || mcStatsHistory.labels.length;
+}
+
+function updateMcStatsChart() {
+  if (!mcStatsChart) initMcStatsChart();
+  if (!mcStatsChart) return;
+  const displayCount = getMcStatsDisplayCount();
+  const labels = mcStatsHistory.labels.slice(-displayCount).map((ts) => new Date(ts));
+  mcStatsChart.data.labels = labels;
+  mcStatsChart.data.datasets[0].data = mcStatsHistory.cpu.slice(-displayCount);
+  mcStatsChart.data.datasets[1].data = mcStatsHistory.memory.slice(-displayCount);
+  mcStatsChart.data.datasets[2].data = mcStatsHistory.tps.slice(-displayCount);
+  mcStatsChart.update('none');
+}
+
+function setMcStatsRange(range) {
+  if (!MC_STATS_CHART_RANGES[range]) return;
+  mcStatsChartRange = range;
+  document.querySelectorAll('.mc-stats-range-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+  updateMcStatsChart();
 }
 
 function updateMcStats(cpu, memory, tps) {
@@ -290,22 +329,28 @@ function updateMcStats(cpu, memory, tps) {
     cpuNode.textContent = `${cpu != null ? cpu.toFixed(1) : '-'} %`;
   }
   if (memoryNode) {
-    const usedMb = memory && memory.used ? Math.round(memory.used / 1024 / 1024) : '-';
-    const totalMb = memory && memory.total ? Math.round(memory.total / 1024 / 1024) : '-';
-    memoryNode.textContent = `${usedMb} MB / ${totalMb} MB`;
+    const usedMb = memory && memory.used ? Math.round(memory.used / 1024 / 1024) : null;
+    const totalMb = memory && memory.total ? Math.round(memory.total / 1024 / 1024) : null;
+    const formatMb = (mb) => mb == null ? '-' : mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb} MB`;
+    memoryNode.textContent = `${formatMb(usedMb)} / ${formatMb(totalMb)}`;
   }
   if (tpsNode) {
     tpsNode.textContent = typeof tps === 'number' ? tps.toFixed(2) : '-';
   }
+
   mcStatsHistory.cpu.push(cpu != null ? cpu : 0);
   mcStatsHistory.memory.push(memory && memory.used ? memory.used / 1024 / 1024 : 0);
-  if (typeof tps === 'number') {
-    mcStatsHistory.tps.push(tps);
+  mcStatsHistory.tps.push(typeof tps === 'number' ? tps : null);
+  mcStatsHistory.labels.push(Date.now());
+
+  while (mcStatsHistory.cpu.length > MC_STATS_HISTORY_MAX) {
+    mcStatsHistory.cpu.shift();
+    mcStatsHistory.memory.shift();
+    mcStatsHistory.tps.shift();
+    mcStatsHistory.labels.shift();
   }
-  if (mcStatsHistory.cpu.length > MC_STATS_HISTORY_MAX) mcStatsHistory.cpu.shift();
-  if (mcStatsHistory.memory.length > MC_STATS_HISTORY_MAX) mcStatsHistory.memory.shift();
-  if (mcStatsHistory.tps.length > MC_STATS_HISTORY_MAX) mcStatsHistory.tps.shift();
-  drawMcStatsChart();
+
+  updateMcStatsChart();
 }
 
 function renderPlayerList(players, count, max) {

@@ -86,6 +86,70 @@
             color: var(--primary);
         }
 
+        .mc-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.9rem;
+            margin-top: 1rem;
+        }
+        .mc-stats-card {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid var(--gray-light);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            box-shadow: var(--shadow);
+            min-height: 92px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .mc-stats-card span {
+            color: var(--gray);
+            font-size: 0.95rem;
+            margin-bottom: 0.55rem;
+            display: block;
+        }
+        .mc-stats-card strong {
+            color: var(--dark);
+            font-size: 1.45rem;
+        }
+        .mc-stats-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .mc-stats-toolbar .mc-stats-range-btn {
+            cursor: pointer;
+            border-radius: 999px;
+            padding: 0.55rem 0.9rem;
+            font-size: 0.92rem;
+            background: transparent;
+            border: 1px solid var(--gray-light);
+            color: var(--dark);
+            transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+        }
+        .mc-stats-toolbar .mc-stats-range-btn.active,
+        .mc-stats-toolbar .mc-stats-range-btn:hover {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
+        .mc-stats-chart-wrapper {
+            margin-top: 1rem;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid var(--gray-light);
+            border-radius: 1rem;
+            padding: 1rem;
+            box-shadow: var(--shadow);
+        }
+        .mc-stats-chart-wrapper canvas {
+            width: 100% !important;
+            height: 300px !important;
+        }
+
         .connection-status {
             display: flex;
             align-items: center;
@@ -1685,21 +1749,33 @@
                     <div class="card" style="margin-top: 1rem;">
                     <h3><i class="fas fa-chart-line"></i> 性能监控</h3>
                     <div id="mcStats" style="min-height: 100px;">
-                        <div class="mc-stats-row">
-                            <span class="mc-stats-label"><i class="fas fa-microchip"></i> CPU 使用</span>
-                            <strong id="mcCpu">-</strong>
+                        <div class="mc-stats-grid">
+                            <div class="mc-stats-card">
+                                <span><i class="fas fa-microchip"></i> CPU 使用</span>
+                                <strong id="mcCpu">-</strong>
+                            </div>
+                            <div class="mc-stats-card">
+                                <span><i class="fas fa-server"></i> 内存使用</span>
+                                <strong id="mcMemory">-</strong>
+                            </div>
+                            <div class="mc-stats-card">
+                                <span><i class="fas fa-tachometer-alt"></i> TPS</span>
+                                <strong id="mcTps">-</strong>
+                            </div>
+                            <div class="mc-stats-card">
+                                <span><i class="fas fa-sync-alt"></i> 自动重启</span>
+                                <strong id="mcAutoRestart">-</strong>
+                            </div>
                         </div>
-                        <div class="mc-stats-row">
-                            <span class="mc-stats-label"><i class="fas fa-server"></i> 内存使用</span>
-                            <strong id="mcMemory">-</strong>
-                        </div>
-                        <div class="mc-stats-row">
-                            <span class="mc-stats-label"><i class="fas fa-sync-alt"></i> 自动重启</span>
-                            <strong id="mcAutoRestart">-</strong>
+                        <div class="mc-stats-toolbar">
+                            <span style="color: var(--gray); font-size: 0.95rem;">时间范围：</span>
+                            <button class="btn btn-sm mc-stats-range-btn active" data-range="5m" onclick="setMcStatsRange('5m')">最近 5 分钟</button>
+                            <button class="btn btn-sm mc-stats-range-btn" data-range="15m" onclick="setMcStatsRange('15m')">最近 15 分钟</button>
+                            <button class="btn btn-sm mc-stats-range-btn" data-range="1h" onclick="setMcStatsRange('1h')">最近 1 小时</button>
                         </div>
                     </div>
-                    <div style="margin-top: 1.5rem;">
-                        <canvas id="mcStatsChart" width="740" height="260" style="width: 100%; max-width: 100%; border: 1px solid var(--gray-light); border-radius: 0.75rem; background: transparent; display: block;"></canvas>
+                    <div class="mc-stats-chart-wrapper">
+                        <canvas id="mcStatsChart" width="740" height="260"></canvas>
                     </div>
                 </div>
             </div>
@@ -1992,6 +2068,7 @@
 
     <div class="toast" id="toast"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="app.js"></script>
     <script src="mc_console.js"></script>
 </body>
