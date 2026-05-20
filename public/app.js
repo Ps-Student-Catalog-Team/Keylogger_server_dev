@@ -81,6 +81,26 @@ async function apiFetch(input, init = {}) {
 }
 window.fetch = apiFetch;
 window.apiFetch = apiFetch;
+window.mcPlayersLastUpdate = 0;
+window.mcPlayersSubscribed = false;
+
+function subscribeMcPlayers() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    ws.send(JSON.stringify({ type: 'subscribe_mc_players' }));
+    window.mcPlayersSubscribed = true;
+}
+
+function subscribeMcChannels() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    ws.send(JSON.stringify({ type: 'subscribe_mc' }));
+    ws.send(JSON.stringify({ type: 'subscribe_mc_players' }));
+    ws.send(JSON.stringify({ type: 'subscribe_mc_stats' }));
+    window.mcPlayersSubscribed = true;
+}
 
 let reconnectTimer = null;
 let autoRefreshTimer = null;
@@ -295,12 +315,25 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             if (typeof loadMcConfig === 'function') {
                 loadMcConfig();
             }
+            // 确保图表容器可见后再初始化和刷新
+            setTimeout(() => {
+                if (typeof initMcStatsChart === 'function') {
+                    initMcStatsChart();
+                }
+                if (typeof updateMcStatsChart === 'function') {
+                    updateMcStatsChart();
+                }
+            }, 100);
             stopAutoRefresh();
         } else if (page === 'mc_players') {
             if (typeof loadMcPlayers === 'function') {
                 loadMcPlayers();
             }
-            if (typeof refreshMcPlayerList === 'function') {
+            if (typeof subscribeMcPlayers === 'function') {
+                subscribeMcPlayers();
+            }
+            const stale = Date.now() - (window.mcPlayersLastUpdate || 0) > 15000;
+            if (stale && typeof refreshMcPlayerList === 'function') {
                 refreshMcPlayerList();
             }
             stopAutoRefresh();
@@ -486,6 +519,7 @@ function handleWebSocketMessage(data) {
         ws.send(JSON.stringify({ type: 'subscribe_mc' }));
         ws.send(JSON.stringify({ type: 'subscribe_mc_players' }));
         ws.send(JSON.stringify({ type: 'subscribe_mc_stats' }));
+        window.mcPlayersSubscribed = true;
     }
     switch (data.type) {
         case 'clients_list':
@@ -545,13 +579,14 @@ function handleWebSocketMessage(data) {
 
         case 'mc_log':
             if (typeof appendMcLog === 'function') {
-                appendMcLog(data.line);
+                appendMcLog({ text: data.line, level: data.level });
             }
             break;
 
         case 'mc_players':
             if (typeof renderPlayerList === 'function') {
                 renderPlayerList(data.players || [], data.count || 0, data.max || 0);
+                window.mcPlayersLastUpdate = Date.now();
             }
             break;
 

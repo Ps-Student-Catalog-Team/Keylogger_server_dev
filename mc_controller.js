@@ -82,6 +82,7 @@ function loadConfig() {
       config = { ...config, ...JSON.parse(data) };
     } catch (e) {
       console.error('加载 MC 配置失败', e);
+      pushLog(`加载 MC 配置失败: ${e.message}`);
     }
   }
 }
@@ -92,6 +93,20 @@ function saveConfig() {
 
 function stripMcColorCodes(text) {
   return String(text).replace(/§[0-9A-FK-OR]/gi, '').replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function classifyMcLogLevel(line) {
+  const text = String(line || '').toUpperCase();
+  if (text.includes('[SEVERE]') || text.includes('[ERROR]') || text.includes('[STDERR]') || /\b(EXCEPTION|FAILED|FAILURE|ERR(OR)?|CRITICAL)\b/.test(text)) {
+    return 'error';
+  }
+  if (text.includes('[WARN]') || text.includes('[WARNING]') || text.includes('WARN ')) {
+    return 'warn';
+  }
+  if (text.includes('[DEBUG]') || text.includes('[TRACE]')) {
+    return 'debug';
+  }
+  return 'info';
 }
 
 function parsePlayerList(stdoutLine) {
@@ -144,7 +159,8 @@ function ensureLogDirectory() {
 
 function appendLogToFile(formatted) {
   ensureLogDirectory();
-  fs.appendFile(LOG_FILE, formatted + os.EOL, (err) => {
+  const sanitized = stripMcColorCodes(formatted);
+  fs.appendFile(LOG_FILE, sanitized + os.EOL, (err) => {
     if (err) {
       console.error('写入 MC 日志文件失败', err);
     }
@@ -160,7 +176,8 @@ function pushLog(line) {
     mcLogs.shift();
   }
   appendLogToFile(formatted);
-  broadcastMcPayload({ type: 'mc_log', line: formatted });
+  const level = classifyMcLogLevel(normalized);
+  broadcastMcPayload({ type: 'mc_log', line: formatted, level });
 
   const parsed = parsePlayerList(normalized);
   if (parsed) {
@@ -484,6 +501,7 @@ function cleanupOldBackups() {
           try {
             fs.unlinkSync(item.path);
             fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_AGE ${item.name}\n`);
+            pushLog(`清理旧备份: ${item.name}（超过 ${config.backupRetentionDays} 天）`);
           } catch (e) {
             console.error('清理旧备份失败:', e);
           }
@@ -496,6 +514,7 @@ function cleanupOldBackups() {
         try {
           fs.unlinkSync(item.path);
           fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_COUNT ${item.name}\n`);
+          pushLog(`清理旧备份: ${item.name}（保留最新 ${config.backupRetentionCount} 个）`);
         } catch (e) {
           console.error('清理旧备份失败:', e);
         }
@@ -509,6 +528,7 @@ function cleanupOldBackups() {
 async function safeBackupWorlds(worldDirs, dest, cwd) {
   let saveOffSent = false;
   if (mcProcess) {
+    pushLog('正在执行 save-off/save-all 同步世界数据，以开始安全备份');
     saveOffSent = sendCommand('save-off');
     sendCommand('save-all');
     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -519,6 +539,7 @@ async function safeBackupWorlds(worldDirs, dest, cwd) {
   } finally {
     if (saveOffSent && mcProcess) {
       sendCommand('save-on');
+      pushLog('已恢复自动保存 (save-on)');
     }
   }
 }
@@ -567,6 +588,7 @@ function setupRoutes(app) {
     if (mcProcess) {
       startPlayerListPolling();
     }
+    pushLog('Minecraft 配置已保存');
     res.json({ success: true, message: '配置已保存' });
   });
 
@@ -639,16 +661,19 @@ function setupRoutes(app) {
         return res.status(400).json({ success: false, error: '未找到任何 world 目录可备份' });
       }
 
+      pushLog(`开始创建备份: ${name}`);
       await safeBackupWorlds(toArchive, dest, cwd);
       if (!fs.existsSync(dest)) {
         throw new Error('备份文件创建失败');
       }
 
       fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+      pushLog(`备份创建完成: ${name}`);
       cleanupOldBackups();
       res.json({ success: true, name });
     } catch (e) {
       console.error('创建备份失败', e);
+      pushLog(`创建备份失败: ${e.message}`);
       res.status(500).json({ success: false, error: e.message });
     }
   });
@@ -694,6 +719,7 @@ function setupRoutes(app) {
       const file = path.join(backupDir, name);
       if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
       if (mcProcess) {
+        pushLog(`准备还原备份: ${name}，正在停止服务器...`);
         stopMinecraft();
         const waitStart = Date.now();
         while (mcProcess && Date.now() - waitStart < 10000) {
@@ -704,12 +730,15 @@ function setupRoutes(app) {
         }
       }
       const cwd = config.workingDir || process.cwd();
+      pushLog(`开始从备份还原: ${name}`);
       await extractBackupArchive(file, cwd);
       fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
       const started = startMinecraft();
+      pushLog(`备份还原完成: ${name}`);
       res.json({ success: true, restored: name, started });
     } catch (e) {
       console.error('还原备份失败', e);
+      pushLog(`还原备份失败: ${e.message}`);
       res.status(500).json({ success: false, error: e.message });
     }
   });

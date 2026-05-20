@@ -20,6 +20,33 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function stripMcColorCodes(text) {
+  return String(text || '')
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/§[0-9A-FK-OR]/gi, '');
+}
+
+function classifyMcLogLevel(text) {
+  const upper = String(text || '').toUpperCase();
+  if (upper.includes('[SEVERE]') || upper.includes('[ERROR]') || upper.includes('[STDERR]')) {
+    return 'error';
+  }
+  if (upper.includes('[WARN]') || upper.includes('[WARNING]') || upper.includes(' WARN ')) {
+    return 'warn';
+  }
+  if (upper.includes('[INFO]')) {
+    return 'info';
+  }
+  return null;
+}
+
+function getMcLogStyle(level) {
+  if (level === 'error') return 'color: #ef4444;';
+  if (level === 'warn') return 'color: #f59e0b;';
+  if (level === 'info') return 'color: #10b981;';
+  return '';
+}
+
 function formatMcColorCodes(text) {
   const colorMap = {
     '0': '#000000', '1': '#0000AA', '2': '#00AA00', '3': '#00AAAA',
@@ -157,8 +184,17 @@ function addToCommandHistory(command) {
 let mcAutoScroll = true;
 
 function appendMcLog(line) {
-  if (typeof line !== 'string') return;
-  mcLogLines.push(line);
+  let text = '';
+  let level = null;
+  if (typeof line === 'object' && line !== null) {
+    text = String(line.text || '');
+    level = String(line.level || classifyMcLogLevel(text)).toLowerCase();
+  } else {
+    text = String(line || '');
+    level = classifyMcLogLevel(text);
+  }
+  if (!['info', 'warn', 'error'].includes(level)) return;
+  mcLogLines.push({ text, level });
   if (mcLogLines.length > 1000) {
     mcLogLines.shift();
   }
@@ -257,13 +293,15 @@ function renderMcConsole() {
   const output = document.getElementById('mcStdout');
   if (!output) return;
   const filter = mcConsoleFilterText.trim().toLowerCase();
-  const lines = mcLogLines.filter((line) => {
+  const lines = mcLogLines.filter((entry) => {
     if (!filter) return true;
-    return line.toLowerCase().includes(filter);
+    return entry.level.includes(filter);
   });
-  output.innerHTML = lines.map((line) => {
-    const html = formatMcColorCodes(line);
-    return filter ? highlightConsoleLine(html, filter) : html;
+  output.innerHTML = lines.map((entry) => {
+    const style = getMcLogStyle(entry.level);
+    const levelText = escapeHtml(entry.level.toUpperCase());
+    const html = `<span style="${style}; font-weight: 700;">${levelText}</span>`;
+    return html;
   }).join('<br>');
   if (mcAutoScroll) {
     output.scrollTop = output.scrollHeight;
@@ -629,7 +667,16 @@ async function loadMcLogs() {
       showToast(data.message || '获取 MC 日志失败', 'error');
       return;
     }
-    mcLogLines = Array.isArray(data.logs) ? data.logs.slice(-1000) : [String(data.logs || '')];
+    mcLogLines = [];
+    if (Array.isArray(data.logs)) {
+      data.logs.slice(-1000).forEach((item) => {
+        const text = String(item || '');
+        const level = classifyMcLogLevel(text);
+        if (['info', 'warn', 'error'].includes(level)) {
+          mcLogLines.push({ text, level });
+        }
+      });
+    }
     renderMcConsole();
   } catch (error) {
     console.error('获取 MC 日志失败:', error);
@@ -649,6 +696,7 @@ async function loadMcPlayers() {
     const data = await response.json();
     if (data.success) {
       renderPlayerList(data.players || [], data.count || 0, data.max || 0);
+      window.mcPlayersLastUpdate = Date.now();
     }
   } catch (error) {
     console.error('加载 MC 玩家列表失败:', error);
