@@ -290,22 +290,30 @@ function highlightConsoleLine(htmlLine, keyword) {
 }
 
 function renderMcConsole() {
-  const output = document.getElementById('mcStdout');
-  if (!output) return;
-  const filter = mcConsoleFilterText.trim().toLowerCase();
-  const lines = mcLogLines.filter((entry) => {
-    if (!filter) return true;
-    return entry.level.includes(filter);
-  });
-  output.innerHTML = lines.map((entry) => {
-    const style = getMcLogStyle(entry.level);
-    const levelText = escapeHtml(entry.level.toUpperCase());
-    const html = `<span style="${style}; font-weight: 700;">${levelText}</span>`;
-    return html;
-  }).join('<br>');
-  if (mcAutoScroll) {
-    output.scrollTop = output.scrollHeight;
-  }
+    const output = document.getElementById('mcStdout');
+    if (!output) return;
+
+    // 获取过滤关键字（按日志内容过滤）
+    const filter = (mcConsoleFilterText || '').trim().toLowerCase();
+
+    // 过滤日志：如果有关键字，则匹配日志文本内容
+    const lines = mcLogLines.filter((entry) => {
+        if (!filter) return true;
+        return entry.text.toLowerCase().includes(filter);
+    });
+
+    // 生成 HTML：级别（带颜色样式） + 日志内容
+    output.innerHTML = lines.map((entry) => {
+        const style = getMcLogStyle(entry.level);
+        const levelText = escapeHtml(entry.level.toUpperCase());
+        const contentText = escapeHtml(entry.text);
+        return `<span style="${style}; font-weight: 700;">${levelText}</span> ${contentText}`;
+    }).join('<br>');
+
+    // 自动滚动到底部（如果开启）
+    if (mcAutoScroll) {
+        output.scrollTop = output.scrollHeight;
+    }
 }
 
 function clearMcConsole() {
