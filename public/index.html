@@ -1374,7 +1374,8 @@
         /* 子菜单容器 */
         .nav-sub-items {
             display: none;
-            padding-left: 1rem;
+            padding-left: 0.75rem;   /* 原来可能是 1rem 或更大 */
+            padding-right: 0.75rem;
             max-height: calc(100vh - 260px);
             overflow-y: auto;
         }
@@ -1445,15 +1446,18 @@
                 <div class="nav-item" data-page="mc_stats">
                     <i class="fas fa-chart-line"></i> 性能监控
                 </div>
-                <div class="nav-item" data-page="mc_players">
-                    <i class="fas fa-users"></i> 在线玩家
-                </div>
                 <div class="nav-item" data-page="mc_console">
                     <i class="fas fa-terminal"></i> 控制台
                 </div>
-                <div class="nav-item" data-page="mc_backups">
-                    <i class="fas fa-archive"></i> 世界备份
+                <div class="nav-item" data-page="mc_players">
+                    <i class="fas fa-users"></i> 在线玩家
                 </div>
+                <div class="nav-item" data-page="startup">
+                    <i class="fas fa-rocket"></i> 启动设置
+                </div>
+                <!-- <div class="nav-item" data-page="mc_backups">
+                    <i class="fas fa-archive"></i> Minecraft世界备份
+                </div-->
             </div>
 
             <!-- 第三个父级：系统 -->
@@ -1462,11 +1466,9 @@
                 <i class="fas fa-chevron-down menu-arrow"></i>
             </div>
             <div class="nav-sub-items" id="systemSubItems">
+                
                 <div class="nav-item" data-page="system">
                     <i class="fas fa-desktop"></i> 系统信息
-                </div>
-                <div class="nav-item" data-page="startup">
-                    <i class="fas fa-rocket"></i> 启动设置
                 </div>
             </div>
         </div>
@@ -2068,7 +2070,7 @@
 
     <div class="toast" id="toast"></div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/js/chart.umd.min.js"></script>
     <script src="app.js"></script>
     <script src="mc_console.js"></script>
 </body>

@@ -226,6 +226,10 @@ function formatMcStatsTimeLabel(timestamp) {
 function initMcStatsChart() {
   const canvas = document.getElementById('mcStatsChart');
   if (!canvas || !canvas.getContext || typeof Chart === 'undefined') return;
+  if (mcStatsChart) {
+    mcStatsChart.destroy();
+    mcStatsChart = null;
+  }
   const ctx = canvas.getContext('2d');
   const gradientCpu = ctx.createLinearGradient(0, 0, 0, canvas.height);
   gradientCpu.addColorStop(0, 'rgba(59, 130, 246, 0.28)');
@@ -267,13 +271,9 @@ function initMcStatsChart() {
       },
       scales: {
         x: {
-          type: 'time',
-          time: {
-            tooltipFormat: 'HH:mm:ss',
-            unit: 'minute',
-            displayFormats: { minute: 'HH:mm' }
-          },
-          grid: { color: 'rgba(107, 117, 128, 0.12)' }
+          type: 'category',
+          grid: { color: 'rgba(107, 117, 128, 0.12)' },
+          ticks: { autoSkip: true, maxRotation: 0, minRotation: 0 }
         },
         y: {
           type: 'linear',
@@ -304,7 +304,7 @@ function updateMcStatsChart() {
   if (!mcStatsChart) initMcStatsChart();
   if (!mcStatsChart) return;
   const displayCount = getMcStatsDisplayCount();
-  const labels = mcStatsHistory.labels.slice(-displayCount).map((ts) => new Date(ts));
+  const labels = mcStatsHistory.labels.slice(-displayCount).map((ts) => formatMcStatsTimeLabel(ts));
   mcStatsChart.data.labels = labels;
   mcStatsChart.data.datasets[0].data = mcStatsHistory.cpu.slice(-displayCount);
   mcStatsChart.data.datasets[1].data = mcStatsHistory.memory.slice(-displayCount);
