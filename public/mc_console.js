@@ -193,7 +193,11 @@ function appendMcLog(line) {
     text = String(line || '');
     level = classifyMcLogLevel(text);
   }
-  if (!['info', 'warn', 'error'].includes(level)) return;
+
+  // 去掉开头的 ISO 时间戳
+  text = text.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s+/, '');
+
+  if (!level) return;
   mcLogLines.push({ text, level });
   if (mcLogLines.length > 1000) {
     mcLogLines.shift();
@@ -302,18 +306,14 @@ function renderMcConsole() {
     const levelColorMap = {
         info: '#10b981',   // 绿色
         warn: '#f59e0b',   // 橙色
-        error: '#ef4444'   // 红色
+        error: '#ef4444',   // 红色
+        debug: '#6b7280'   // 灰色
     };
 
     output.innerHTML = lines.map((entry) => {
-        let text = escapeHtml(entry.text);
-        // 匹配独立的 INFO、WARN、ERROR（不区分大小写，使用单词边界）
-        text = text.replace(/\b(INFO|WARN|ERROR)\b/gi, (match) => {
-            const lower = match.toLowerCase();
-            const color = levelColorMap[lower];
-            return `<span style="color: ${color};">${match}</span>`;
-        });
-        return `<div style="white-space: pre-wrap; word-break: break-word;">${text}</div>`;
+        const lineStyle = entry.level ? `color: ${levelColorMap[entry.level] || 'inherit'};` : '';
+        const text = formatMcColorCodes(entry.text);
+        return `<div style="white-space: pre-wrap; word-break: break-word; ${lineStyle}">${text}</div>`;
     }).join('');
 
     if (mcAutoScroll) {

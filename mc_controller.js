@@ -795,11 +795,15 @@ function setupRoutes(app) {
     try {
       // First try PID file restoration
       const restored = await tryRestoreFromPidFile();
-      if (restored) return res.json({ success: true, message: '已根据 PID 文件恢复运行状态', pid: mcProcess.pid, recovered: true });
+      if (restored) {
+        startPlayerListPolling();
+        return res.json({ success: true, message: '已根据 PID 文件恢复运行状态', pid: mcProcess.pid, recovered: true });
+      }
       // Otherwise scan processes for likely MC process
       const found = await scanForMcProcess();
       if (found) {
         writePidFile(mcProcess.pid);
+        startPlayerListPolling();
         return res.json({ success: true, message: '已找到并关联现有进程', pid: mcProcess.pid, recovered: true });
       }
       return res.json({ success: false, message: '未找到正在运行的 MC 进程' });
