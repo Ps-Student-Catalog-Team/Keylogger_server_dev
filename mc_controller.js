@@ -9,6 +9,8 @@ const LOG_DIR = path.join(__dirname, 'logs', 'mc');
 const LOG_FILE = path.join(LOG_DIR, 'latest.log');
 const BACKUP_DIR = path.join(__dirname, 'backups');
 const BACKUP_AUDIT = path.join(LOG_DIR, 'backups.log');
+const DATA_DIR = path.join(__dirname, 'data');
+const PID_FILE = path.join(DATA_DIR, 'mc.pid');
 const LOG_MAX_LINES = 1000;
 const WS_OPEN = 1;
 let mcProcess = null;
@@ -192,7 +194,127 @@ function pushLog(line) {
 }
 
 function getStatus() {
-  return { running: mcProcess !== null, pid: mcProcess ? mcProcess.pid : null };
+  const running = mcProcess !== null;
+  const pid = mcProcess ? mcProcess.pid : null;
+  const recovered = mcProcess && mcProcess.recovered === true;
+  return { running, pid, recovered };
+}
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function writePidFile(pid) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(PID_FILE, String(pid), 'utf8');
+  } catch (e) {
+    console.error('写入 PID 文件失败', e);
+  }
+}
+
+function readPidFile() {
+  try {
+    if (!fs.existsSync(PID_FILE)) return null;
+    const raw = fs.readFileSync(PID_FILE, 'utf8').trim();
+    const pid = parseInt(raw, 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearPidFile() {
+  try {
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
+  } catch (e) {
+    console.error('清理 PID 文件失败', e);
+  }
+}
+
+async function processExists(pid) {
+  if (!pid) return false;
+  try {
+    if (process.platform === 'win32') {
+      const out = await runChildProcess('tasklist', ['/FI', `PID eq ${pid}`]);
+      return out && out.indexOf(String(pid)) !== -1;
+    }
+    // unix-like
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  } catch (e) {
+    return false;
+  }
+}
+
+async function tryRestoreFromPidFile() {
+  const pid = readPidFile();
+  if (!pid) return false;
+  const exists = await processExists(pid);
+  if (!exists) {
+    clearPidFile();
+    return false;
+  }
+  mcProcess = { pid, recovered: true };
+  pushLog(`检测到已存在的 Minecraft 进程 (pid=${pid})，状态已恢复为“运行中”（只读模式）`);
+  // start stats polling so UI can show CPU/memory
+  startStatsPolling();
+  // do not enable player list polling or stdin-based commands for recovered processes
+  return true;
+}
+
+async function scanForMcProcess() {
+  try {
+    const lookFor = [];
+    if (config.jarPath) lookFor.push(path.basename(config.jarPath));
+    if (config.fullCommand) lookFor.push(config.fullCommand.split(' ').slice(0,3).join(' '));
+    // fallback keywords
+    lookFor.push('server.jar');
+    lookFor.push('java');
+
+    if (process.platform === 'win32') {
+      const out = await runChildProcess('wmic', ['process', 'get', 'ProcessId,CommandLine'], { windowsHide: true });
+      const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const m = line.match(/(.*)\s+(\d+)$/);
+        if (!m) continue;
+        const cmd = m[1] || '';
+        const pid = parseInt(m[2], 10);
+        if (!pid) continue;
+        const combined = cmd.toLowerCase();
+        if (lookFor.some(k => combined.indexOf(k.toLowerCase()) !== -1)) {
+          mcProcess = { pid, recovered: true };
+          pushLog(`通过进程扫描关联到 PID ${pid}`);
+          startStatsPolling();
+          return true;
+        }
+      }
+    } else {
+      const out = await runChildProcess('ps', ['-eo', 'pid,cmd'], { windowsHide: true });
+      const lines = out.split(/\n/).map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const m = line.match(/^(\d+)\s+(.*)$/);
+        if (!m) continue;
+        const pid = parseInt(m[1], 10);
+        const cmd = m[2] || '';
+        const combined = cmd.toLowerCase();
+        if (lookFor.some(k => combined.indexOf(k.toLowerCase()) !== -1)) {
+          mcProcess = { pid, recovered: true };
+          pushLog(`通过进程扫描关联到 PID ${pid}`);
+          startStatsPolling();
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (e) {
+    console.error('扫描进程失败', e);
+    return false;
+  }
 }
 
 function getLogs() {
@@ -201,7 +323,7 @@ function getLogs() {
 
 function startPlayerListPolling() {
   stopPlayerListPolling();
-  if (!config.playerListIntervalSeconds || !mcProcess) return;
+  if (!config.playerListIntervalSeconds || !mcProcess || !mcProcess.stdin) return;
   playerListTimer = setInterval(() => {
     if (mcProcess) {
       sendCommand('list');
@@ -335,6 +457,11 @@ function startMinecraft(manualStart = true) {
     }
     lastStartTimestamp = Date.now();
     mcProcess = spawn(fullCommand, [], { cwd: workingDir, shell: true, windowsHide: true, detached: false });
+    try {
+      writePidFile(mcProcess.pid);
+    } catch (e) {
+      console.error('写 PID 文件失败', e);
+    }
     pushLog(`启动命令: ${fullCommand}`);
 
     mcProcess.stdout.on('data', (data) => pushLog(data.toString()));
@@ -347,6 +474,7 @@ function startMinecraft(manualStart = true) {
         restartAttempts = 0;
       }
       mcProcess = null;
+      clearPidFile();
       stopPlayerListPolling();
       stopStatsPolling();
       if (config.autoRestart && !manualStopRequested) {
@@ -368,6 +496,7 @@ function startMinecraft(manualStart = true) {
     mcProcess.on('error', (err) => {
       pushLog(`启动失败: ${err.message}`);
       mcProcess = null;
+      clearPidFile();
       stopPlayerListPolling();
       stopStatsPolling();
     });
@@ -385,6 +514,10 @@ function startMinecraft(manualStart = true) {
 
 function stopMinecraft() {
   if (!mcProcess) return false;
+  if (mcProcess.recovered) {
+    pushLog('无法向恢复的进程发送停止命令（stdin 不可用）；请使用强制终止或在主机上手动停止');
+    return false;
+  }
   try {
     manualStopRequested = true;
     stopPlayerListPolling();
@@ -403,12 +536,20 @@ function killMinecraft() {
     manualStopRequested = true;
     stopPlayerListPolling();
     stopStatsPolling();
+    const pid = mcProcess.pid;
+    if (!pid) return false;
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(mcProcess.pid), '/f', '/t'], { windowsHide: true });
+      spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true });
     } else {
-      mcProcess.kill('SIGTERM');
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch (err) {
+        // fallback to spawn kill
+        spawn('kill', ['-TERM', String(pid)], { windowsHide: true });
+      }
     }
     pushLog('已强制终止 Minecraft 服务器进程');
+    clearPidFile();
     return true;
   } catch (e) {
     pushLog(`强制终止失败: ${e.message}`);
@@ -471,7 +612,12 @@ async function extractBackupArchive(file, cwd) {
 }
 
 function sendCommand(command) {
-  if (!mcProcess || !mcProcess.stdin || mcProcess.stdin.destroyed) return false;
+  if (!mcProcess) return false;
+  if (mcProcess.recovered) {
+    pushLog('无法向已恢复的进程发送命令（stdin 不可用）');
+    return false;
+  }
+  if (!mcProcess.stdin || mcProcess.stdin.destroyed) return false;
   try {
     mcProcess.stdin.write(command + '\n');
     pushLog(`> ${command}`);
@@ -645,6 +791,24 @@ function setupRoutes(app) {
     });
   });
 
+  app.post('/api/mc/sync', async (req, res) => {
+    try {
+      // First try PID file restoration
+      const restored = await tryRestoreFromPidFile();
+      if (restored) return res.json({ success: true, message: '已根据 PID 文件恢复运行状态', pid: mcProcess.pid, recovered: true });
+      // Otherwise scan processes for likely MC process
+      const found = await scanForMcProcess();
+      if (found) {
+        writePidFile(mcProcess.pid);
+        return res.json({ success: true, message: '已找到并关联现有进程', pid: mcProcess.pid, recovered: true });
+      }
+      return res.json({ success: false, message: '未找到正在运行的 MC 进程' });
+    } catch (e) {
+      console.error('同步 MC 状态失败', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   // Backups: create, list, download, restore
   app.post('/api/mc/backup', async (req, res) => {
     try {
@@ -745,5 +909,11 @@ function setupRoutes(app) {
 }
 
 loadConfig();
+// 尝试根据 PID 文件或进程扫描恢复已存在的 MC 进程状态
+try {
+  tryRestoreFromPidFile().catch(() => {});
+} catch (e) {
+  // ignore
+}
 
 module.exports = { setupRoutes, loadConfig, setWebSocketServer };

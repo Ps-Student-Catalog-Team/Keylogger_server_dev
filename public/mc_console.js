@@ -293,24 +293,29 @@ function renderMcConsole() {
     const output = document.getElementById('mcStdout');
     if (!output) return;
 
-    // 获取过滤关键字（按日志内容过滤）
     const filter = (mcConsoleFilterText || '').trim().toLowerCase();
-
-    // 过滤日志：如果有关键字，则匹配日志文本内容
     const lines = mcLogLines.filter((entry) => {
         if (!filter) return true;
         return entry.text.toLowerCase().includes(filter);
     });
 
-    // 生成 HTML：级别（带颜色样式） + 日志内容
-    output.innerHTML = lines.map((entry) => {
-        const style = getMcLogStyle(entry.level);
-        const levelText = escapeHtml(entry.level.toUpperCase());
-        const contentText = escapeHtml(entry.text);
-        return `<span style="${style}; font-weight: 700;">${levelText}</span> ${contentText}`;
-    }).join('<br>');
+    const levelColorMap = {
+        info: '#10b981',   // 绿色
+        warn: '#f59e0b',   // 橙色
+        error: '#ef4444'   // 红色
+    };
 
-    // 自动滚动到底部（如果开启）
+    output.innerHTML = lines.map((entry) => {
+        let text = escapeHtml(entry.text);
+        // 匹配独立的 INFO、WARN、ERROR（不区分大小写，使用单词边界）
+        text = text.replace(/\b(INFO|WARN|ERROR)\b/gi, (match) => {
+            const lower = match.toLowerCase();
+            const color = levelColorMap[lower];
+            return `<span style="color: ${color};">${match}</span>`;
+        });
+        return `<div style="white-space: pre-wrap; word-break: break-word;">${text}</div>`;
+    }).join('');
+
     if (mcAutoScroll) {
         output.scrollTop = output.scrollHeight;
     }
@@ -653,18 +658,50 @@ async function loadMcStatus() {
   try {
     const response = await fetch('/api/mc/status');
     const data = await response.json();
+    const statusNode = document.getElementById('mcStatus');
+    const pidNode = document.getElementById('mcPid');
     if (data.running) {
-      document.getElementById('mcStatus').textContent = '运行中';
-      document.getElementById('mcPid').textContent = data.pid || '-';
+      const recovered = data.recovered === true;
+      statusNode.textContent = recovered ? '运行中（只读）' : '运行中';
+      pidNode.textContent = data.pid || '-';
     } else {
-      document.getElementById('mcStatus').textContent = '未运行';
-      document.getElementById('mcPid').textContent = '-';
+      statusNode.textContent = '未运行';
+      pidNode.textContent = '-';
     }
   } catch (error) {
     console.error('加载 MC 状态失败:', error);
     document.getElementById('mcStatus').textContent = '未知';
     document.getElementById('mcPid').textContent = '-';
   }
+}
+
+async function syncMcStatus() {
+  try {
+    const resp = await fetch('/api/mc/sync', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(data.message || '已同步服务器状态', 'success');
+      await loadMcStatus();
+      // reload logs and players to reflect possible recovered state
+      loadMcLogs();
+      loadMcPlayers();
+    } else {
+      showToast(data.message || data.error || '未找到运行中的 MC 进程', 'warning');
+      await loadMcStatus();
+    }
+  } catch (e) {
+    console.error('同步失败', e);
+    showToast('同步失败', 'error');
+  }
+}
+
+// Attach sync button if present in DOM
+const mcSyncBtn = document.getElementById('mcSyncBtn');
+if (mcSyncBtn) {
+  mcSyncBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    syncMcStatus();
+  });
 }
 
 async function loadMcLogs() {
@@ -731,12 +768,35 @@ async function startMinecraftServer() {
 
 async function stopMinecraftServer() {
   try {
+    // 检查当前状态，若为恢复（只读）态，则提示用户选择强制终止
+    const st = await fetch('/api/mc/status');
+    const stData = await st.json();
+    if (stData.running && stData.recovered) {
+      const msg = '检测到服务器为恢复（只读）状态，无法通过控制台发送 stop。是否执行强制终止（kill）？';
+      if (typeof showConfirmModal === 'function') {
+        showConfirmModal('强制终止', msg, async () => {
+          const resp = await fetch('/api/mc/kill', { method: 'POST' });
+          const data = await resp.json();
+          if (data.success) showToast('已强制终止 MC 服务器', 'success');
+          else showToast('强制终止失败', 'error');
+          await loadMcStatus();
+        });
+      } else if (window.confirm(msg)) {
+        const resp = await fetch('/api/mc/kill', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) showToast('已强制终止 MC 服务器', 'success');
+        else showToast('强制终止失败', 'error');
+        await loadMcStatus();
+      }
+      return;
+    }
+
     const response = await fetch('/api/mc/stop', { method: 'POST' });
     const data = await response.json();
     if (data.success) {
       showToast('已发送停止命令', 'success');
     } else {
-      showToast('停止失败', 'error');
+      showToast(data.error || '停止失败', 'error');
     }
     await loadMcStatus();
   } catch (error) {
@@ -769,6 +829,17 @@ async function sendMcCommand(commandInput) {
     return;
   }
   try {
+    // 若服务器处于恢复（只读）态，禁止发送命令
+    try {
+      const st = await fetch('/api/mc/status');
+      const stData = await st.json();
+      if (stData.running && stData.recovered) {
+        showToast('当前服务器为恢复（只读）状态，无法发送控制台命令，请使用强制终止或在主机上重启服务器', 'warning');
+        return;
+      }
+    } catch (e) {
+      // ignore status check errors and try to send command
+    }
     const response = await fetch('/api/mc/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

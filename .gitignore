@@ -5,3 +5,4 @@ known_clients.json
 .env
 backups/
 mc_config.json
+data/mc.pid
