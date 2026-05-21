@@ -5,7 +5,7 @@ const { spawn } = require('child_process');
 
 const LOG_MAX_LINES = 2000;
 const PLAYER_COUNT_REGEX = /There are\s+(\d+)\s+of\s+a\s+max\s+of\s+(\d+)\s+players\s+online/i;
-const PLAYER_LIST_REGEX = /^(?:\[.*?\]\s*)?\[?\s*([\w,\s"']*?)\s*\]?$/;
+const PLAYER_LIST_REGEX = /^(?:\[.*?\]\s*)?\[?\s*([^\]]*?)\s*\]?$/;
 const TPS_REGEX = /TPS\s+from\s+last\s+.*?:\s*([\d.]+)/i;
 
 class McServer {
@@ -39,8 +39,14 @@ class McServer {
     this.playerInfo = { players: [], count: 0, max: 0 };
     this.latestTps = null;
     this.manualStopRequested = false;
+    this.restartAttempts = 0;
+    this.playerListTimer = null;
+    this.autoBackupTimer = null;
+    this.lastAutoBackupKey = null;
+    this.backupInProgress = false;
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
+    this.configureAutoTasks();
   }
 
   emit(event, payload = {}) {
@@ -57,7 +63,142 @@ class McServer {
     if (config.name) this.config.name = config.name;
     if (config.display_name) this.config.display_name = config.display_name;
     if (config.backupDir !== undefined) this.config.backupDir = config.backupDir;
+    this.configureAutoTasks();
     return this.config;
+  }
+
+  configureAutoTasks() {
+    this.stopAutoBackup();
+    if (!this.config.autoBackupEnabled || !String(this.config.autoBackupCron || '').trim()) {
+      return;
+    }
+    this.autoBackupTimer = setInterval(async () => {
+      if (!this.config.autoBackupEnabled || !this.config.autoBackupCron) return;
+      const now = new Date();
+      if (!this.isCronScheduleDue(this.config.autoBackupCron, now)) return;
+      const key = this.getAutoBackupKey(now);
+      if (key === this.lastAutoBackupKey) return;
+      this.lastAutoBackupKey = key;
+      await this.runScheduledBackup();
+    }, 30 * 1000);
+  }
+
+  parseCronField(field, value, min, max) {
+    if (field === '*') return true;
+    if (field.includes(',')) {
+      return field.split(',').some((part) => this.parseCronField(part.trim(), value, min, max));
+    }
+    if (field.indexOf('/') > -1) {
+      const [base, step] = field.split('/');
+      const interval = parseInt(step, 10);
+      if (Number.isNaN(interval) || interval <= 0) return false;
+      if (base === '*') {
+        return (value - min) % interval === 0;
+      }
+      return false;
+    }
+    if (field.indexOf('-') > -1) {
+      const [start, end] = field.split('-').map((v) => parseInt(v, 10));
+      if (Number.isNaN(start) || Number.isNaN(end)) return false;
+      return value >= start && value <= end;
+    }
+    const expected = parseInt(field, 10);
+    return !Number.isNaN(expected) && value === expected;
+  }
+
+  isCronScheduleDue(cronExpression, now) {
+    const parts = String(cronExpression || '').trim().split(/\s+/);
+    if (parts.length !== 5) return false;
+    const [minuteExpr, hourExpr, dayExpr, monthExpr, dowExpr] = parts;
+    return this.parseCronField(minuteExpr, now.getMinutes(), 0, 59)
+      && this.parseCronField(hourExpr, now.getHours(), 0, 23)
+      && this.parseCronField(dayExpr, now.getDate(), 1, 31)
+      && this.parseCronField(monthExpr, now.getMonth() + 1, 1, 12)
+      && this.parseCronField(dowExpr, now.getDay(), 0, 6);
+  }
+
+  getAutoBackupKey(now) {
+    return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
+  }
+
+  stopAutoBackup() {
+    if (this.autoBackupTimer) {
+      clearInterval(this.autoBackupTimer);
+      this.autoBackupTimer = null;
+    }
+  }
+
+  async runScheduledBackup() {
+    if (this.backupInProgress) return;
+    this.backupInProgress = true;
+    try {
+      const fileName = await this.createBackup();
+      this.pushLog(`自动备份完成: ${fileName}`);
+    } catch (e) {
+      this.pushLog(`自动备份失败: ${e.message}`);
+    } finally {
+      this.backupInProgress = false;
+    }
+  }
+
+  startPlayerListPolling() {
+    this.stopPlayerListPolling();
+    const intervalSeconds = Number(this.config.playerListIntervalSeconds) || 0;
+    if (!intervalSeconds || !this.process || !this.process.stdin || this.process.stdin.destroyed) return;
+    this.playerListTimer = setInterval(() => {
+      if (this.process && this.process.stdin && !this.process.stdin.destroyed) {
+        this.sendCommand('list');
+      }
+    }, intervalSeconds * 1000);
+  }
+
+  stopPlayerListPolling() {
+    if (this.playerListTimer) {
+      clearInterval(this.playerListTimer);
+      this.playerListTimer = null;
+    }
+  }
+
+  scheduleAutoRestart() {
+    if (!this.config.autoRestart || this.manualStopRequested) return;
+    const maxRetries = Number(this.config.autoRestartMaxRetries) || 0;
+    if (this.restartAttempts >= maxRetries) {
+      this.pushLog('已达到最大自动重启次数，不再继续重启');
+      return;
+    }
+    const delay = Math.max(1, Number(this.config.autoRestartDelaySeconds) || 5);
+    const backoff = Math.min(delay * Math.pow(2, this.restartAttempts), 60);
+    this.restartAttempts += 1;
+    this.pushLog(`将在 ${backoff} 秒后自动重启（${this.restartAttempts}/${maxRetries}）`);
+    this.autoRestartTimer = setTimeout(() => {
+      this.autoRestartTimer = null;
+      if (!this.process) {
+        this.start(false);
+      }
+    }, backoff * 1000);
+  }
+
+  stopAutoRestart() {
+    if (this.autoRestartTimer) {
+      clearTimeout(this.autoRestartTimer);
+      this.autoRestartTimer = null;
+    }
+  }
+
+  waitForProcessClose(timeoutMs = 15000) {
+    if (!this.process) return Promise.resolve();
+    return new Promise((resolve) => {
+      const processRef = this.process;
+      const onClose = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        processRef.removeListener('close', onClose);
+        resolve();
+      }, timeoutMs);
+      processRef.once('close', onClose);
+    });
   }
 
   getLaunchCommand() {
@@ -96,11 +237,7 @@ class McServer {
     this.logs.push(formatted);
     while (this.logs.length > LOG_MAX_LINES) this.logs.shift();
     this.ensureLogDir();
-    try {
-      fs.appendFileSync(this.logFile, formatted + os.EOL);
-    } catch (e) {
-      // ignore write failures
-    }
+    fs.promises.appendFile(this.logFile, formatted + os.EOL).catch(() => {});
 
     const level = this.classifyLogLevel(normalized);
     this.updatePlayerInfoFromLine(normalized);
@@ -128,7 +265,7 @@ class McServer {
       this.emit('mc_players', { players: this.playerInfo.players, count: this.playerInfo.count, max: this.playerInfo.max });
       return;
     }
-    if (line.trim().startsWith('[') || line.trim().startsWith('[')) {
+    if (line.trim().startsWith('[')) {
       const listMatch = line.match(PLAYER_LIST_REGEX);
       if (listMatch) {
         const raw = listMatch[1].trim();
@@ -180,11 +317,17 @@ class McServer {
       this.process.on('close', (code) => {
         this.pushLog(`进程已退出，退出码: ${code}`);
         this.process = null;
+        this.stopPlayerListPolling();
+        if (!this.manualStopRequested && this.config.autoRestart) {
+          this.scheduleAutoRestart();
+        }
       });
       this.process.on('error', (err) => {
         this.pushLog(`启动失败: ${err.message}`);
         this.process = null;
       });
+
+      this.startPlayerListPolling();
       return true;
     } catch (e) {
       this.pushLog(`启动异常: ${e.message}`);
@@ -195,12 +338,10 @@ class McServer {
 
   stop() {
     if (!this.process) return false;
-    if (this.process.recovered) {
-      this.pushLog('恢复的进程无法通过 stdin 停止');
-      return false;
-    }
     try {
       this.manualStopRequested = true;
+      this.stopPlayerListPolling();
+      this.stopAutoRestart();
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write('stop\n');
       }
@@ -215,6 +356,9 @@ class McServer {
   kill() {
     if (!this.process) return false;
     try {
+      this.manualStopRequested = true;
+      this.stopPlayerListPolling();
+      this.stopAutoRestart();
       const pid = this.process.pid;
       if (!pid) return false;
       if (process.platform === 'win32') {
@@ -237,10 +381,6 @@ class McServer {
 
   sendCommand(cmd) {
     if (!cmd || !this.process) return false;
-    if (this.process.recovered) {
-      this.pushLog('无法向已恢复的进程发送命令');
-      return false;
-    }
     try {
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write(cmd + '\n');
@@ -305,9 +445,10 @@ class McServer {
     }
     if (this.process) {
       this.stop();
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await this.waitForProcessClose(15000);
       if (this.process) {
         this.kill();
+        await this.waitForProcessClose(5000);
       }
     }
     await this.extractBackupArchive(backupPath, this.resolveWorkingDir());
@@ -319,18 +460,13 @@ class McServer {
     if (process.platform === 'win32') {
       const quotedPaths = worldDirs.map((dir) => `'${dir.replace(/'/g, "''")}'`).join(', ');
       const quotedDest = dest.replace(/'/g, "''");
-      try {
-        await this.runChildProcess('powershell.exe', [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Compress-Archive -Path ${quotedPaths} -DestinationPath '${quotedDest}' -Force`
-        ], { cwd });
-        return;
-      } catch (archiveError) {
-        await this.runChildProcess('tar', ['-a', '-cf', dest, ...worldDirs], { cwd });
-        return;
-      }
+      await this.runChildProcess('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Compress-Archive -Path ${quotedPaths} -DestinationPath '${quotedDest}' -Force`
+      ], { cwd });
+      return;
     }
     await this.runChildProcess('tar', ['-czf', dest, ...worldDirs], { cwd });
   }
@@ -372,6 +508,9 @@ class McServer {
     if (this.process) {
       this.pushLog('正在执行 save-off/save-all 同步世界数据，以开始安全备份');
       saveOffSent = this.sendCommand('save-off');
+      if (!saveOffSent) {
+        this.pushLog('警告: save-off 命令发送失败，备份期间数据可能不一致');
+      }
       this.sendCommand('save-all');
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }

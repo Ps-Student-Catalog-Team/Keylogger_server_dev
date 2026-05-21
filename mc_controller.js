@@ -44,6 +44,9 @@ let wsServer = null;
 let latestTps = null;
 let latestCpu = 0;
 let latestMemory = { used: 0, total: os.totalmem() };
+let autoBackupTimer = null;
+let lastAutoBackupKey = null;
+let backupInProgress = false;
 
 function setWebSocketServer(server) {
   wsServer = server;
@@ -82,6 +85,8 @@ function loadConfig() {
     try {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
       config = { ...config, ...JSON.parse(data) };
+      // 配置加载后（如包含自动备份设置）需要重新配置调度
+      configureAutoTasks();
     } catch (e) {
       console.error('加载 MC 配置失败', e);
       pushLog(`加载 MC 配置失败: ${e.message}`);
@@ -91,6 +96,91 @@ function loadConfig() {
 
 function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+}
+
+function parseCronField(field, value, min, max) {
+  if (field === '*') return true;
+  if (field.includes(',')) return field.split(',').some((part) => parseCronField(part.trim(), value, min, max));
+  if (field.indexOf('/') > -1) {
+    const [base, step] = field.split('/');
+    const interval = parseInt(step, 10);
+    if (Number.isNaN(interval) || interval <= 0) return false;
+    if (base === '*') {
+      return (value - min) % interval === 0;
+    }
+    return false;
+  }
+  if (field.indexOf('-') > -1) {
+    const [start, end] = field.split('-').map((v) => parseInt(v, 10));
+    if (Number.isNaN(start) || Number.isNaN(end)) return false;
+    return value >= start && value <= end;
+  }
+  const expected = parseInt(field, 10);
+  return !Number.isNaN(expected) && value === expected;
+}
+
+function isCronScheduleDue(cronExpression, now) {
+  const parts = String(cronExpression || '').trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const [minuteExpr, hourExpr, dayExpr, monthExpr, dowExpr] = parts;
+  return parseCronField(minuteExpr, now.getMinutes(), 0, 59)
+    && parseCronField(hourExpr, now.getHours(), 0, 23)
+    && parseCronField(dayExpr, now.getDate(), 1, 31)
+    && parseCronField(monthExpr, now.getMonth() + 1, 1, 12)
+    && parseCronField(dowExpr, now.getDay(), 0, 6);
+}
+
+function getAutoBackupKey(now) {
+  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
+}
+
+function stopAutoBackup() {
+  if (autoBackupTimer) {
+    clearInterval(autoBackupTimer);
+    autoBackupTimer = null;
+  }
+}
+
+function configureAutoTasks() {
+  stopAutoBackup();
+  lastAutoBackupKey = null;
+  if (!config.autoBackupEnabled || !String(config.autoBackupCron || '').trim()) return;
+  autoBackupTimer = setInterval(async () => {
+    if (!config.autoBackupEnabled || !config.autoBackupCron) return;
+    const now = new Date();
+    if (!isCronScheduleDue(config.autoBackupCron, now)) return;
+    const key = getAutoBackupKey(now);
+    if (key === lastAutoBackupKey) return;
+    lastAutoBackupKey = key;
+    if (backupInProgress) return;
+    backupInProgress = true;
+    try {
+      const backupDir = getBackupDir();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const name = process.platform === 'win32' ? `backup-${timestamp}.zip` : `backup-${timestamp}.tar.gz`;
+      const dest = path.join(backupDir, name);
+      const cwd = config.workingDir || process.cwd();
+      const worldNames = ['world', 'world_nether', 'world_the_end'];
+      const toArchive = worldNames.filter((d) => fs.existsSync(path.join(cwd, d))).map((d) => d);
+      if (toArchive.length === 0) {
+        pushLog('自动备份跳过：未找到 world 目录');
+        return;
+      }
+      pushLog(`开始自动备份: ${name}`);
+      await safeBackupWorlds(toArchive, dest, cwd);
+      if (fs.existsSync(dest)) {
+        await fs.promises.appendFile(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+        pushLog(`自动备份完成: ${name}`);
+        await cleanupOldBackups();
+      } else {
+        pushLog('自动备份失败：备份文件未创建');
+      }
+    } catch (e) {
+      pushLog(`自动备份异常: ${e.message}`);
+    } finally {
+      backupInProgress = false;
+    }
+  }, 30 * 1000);
 }
 
 function stripMcColorCodes(text) {
@@ -371,6 +461,24 @@ async function getMcProcessStats(pid) {
   }
 }
 
+function waitForMcProcessClose(timeoutMs = 15000) {
+  if (!mcProcess) return Promise.resolve(true);
+  // if process looks like a recovered placeholder, cannot wait on events
+  if (!mcProcess || !mcProcess.on) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const procRef = mcProcess;
+    const onClose = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      procRef.removeListener('close', onClose);
+      resolve(false);
+    }, timeoutMs);
+    procRef.once('close', onClose);
+  });
+}
+
 function getWindowsProcessStats(pid) {
   return new Promise((resolve) => {
     const query = `(IDProcess=${pid} OR ParentProcessId=${pid})`;
@@ -584,9 +692,8 @@ async function createBackupArchive(worldDirs, dest, cwd) {
       ], { cwd });
       return;
     } catch (archiveError) {
-      // 如果 PowerShell 压缩失败，则尝试使用 tar 的自动扩展模式创建 ZIP
-      await runChildProcess('tar', ['-a', '-cf', dest, ...worldDirs], { cwd });
-      return;
+      // 在纯净的 Windows 环境中，我们要求使用 PowerShell；不要回退到 tar（可能不存在）
+      throw archiveError;
     }
   }
   await runChildProcess('tar', ['-czf', dest, ...worldDirs], { cwd });
@@ -597,13 +704,18 @@ async function extractBackupArchive(file, cwd) {
     if (process.platform === 'win32') {
       const quotedFile = file.replace(/'/g, "''");
       const quotedCwd = cwd.replace(/'/g, "''");
-      await runChildProcess('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Expand-Archive -Path '${quotedFile}' -DestinationPath '${quotedCwd}' -Force`
-      ], { cwd });
-      return;
+      try {
+        await runChildProcess('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `Expand-Archive -Path '${quotedFile}' -DestinationPath '${quotedCwd}' -Force`
+        ], { cwd });
+        return;
+      } catch (e) {
+        // 不回退到 unzip，在没有 PowerShell 的纯净 Windows 环境中应当报错
+        throw e;
+      }
     }
     await runChildProcess('unzip', ['-o', file, '-d', cwd], { cwd });
     return;
@@ -628,7 +740,7 @@ function sendCommand(command) {
   }
 }
 
-function cleanupOldBackups() {
+async function cleanupOldBackups() {
   try {
     ensureMcDirectories();
     const backupDir = getBackupDir();
@@ -642,29 +754,30 @@ function cleanupOldBackups() {
     const now = Date.now();
     if (Number.isInteger(config.backupRetentionDays) && config.backupRetentionDays > 0) {
       const cutoff = now - config.backupRetentionDays * 24 * 60 * 60 * 1000;
-      list.forEach((item) => {
+      for (const item of list) {
         if (item.mtime < cutoff) {
           try {
             fs.unlinkSync(item.path);
-            fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_AGE ${item.name}\n`);
+            await fs.promises.appendFile(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_AGE ${item.name}\n`);
             pushLog(`清理旧备份: ${item.name}（超过 ${config.backupRetentionDays} 天）`);
           } catch (e) {
             console.error('清理旧备份失败:', e);
           }
         }
-      });
+      }
     }
 
     if (Number.isInteger(config.backupRetentionCount) && config.backupRetentionCount > 0) {
-      list.slice(config.backupRetentionCount).forEach((item) => {
+      const toPurge = list.slice(config.backupRetentionCount);
+      for (const item of toPurge) {
         try {
           fs.unlinkSync(item.path);
-          fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_COUNT ${item.name}\n`);
+          await fs.promises.appendFile(BACKUP_AUDIT, `${new Date().toISOString()} PURGED_BY_COUNT ${item.name}\n`);
           pushLog(`清理旧备份: ${item.name}（保留最新 ${config.backupRetentionCount} 个）`);
         } catch (e) {
           console.error('清理旧备份失败:', e);
         }
-      });
+      }
     }
   } catch (e) {
     console.error('清理旧备份失败', e);
@@ -731,6 +844,8 @@ function setupRoutes(app) {
     if (typeof autoRestartMaxRetries === 'number') config.autoRestartMaxRetries = autoRestartMaxRetries;
     if (typeof playerListIntervalSeconds === 'number') config.playerListIntervalSeconds = playerListIntervalSeconds;
     saveConfig();
+    // 重配置自动任务（例如 autoBackupCron）
+    configureAutoTasks();
     if (mcProcess) {
       startPlayerListPolling();
     }
@@ -835,9 +950,9 @@ function setupRoutes(app) {
         throw new Error('备份文件创建失败');
       }
 
-      fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
+      await fs.promises.appendFile(BACKUP_AUDIT, `${new Date().toISOString()} CREATED ${name}\n`);
       pushLog(`备份创建完成: ${name}`);
-      cleanupOldBackups();
+      await cleanupOldBackups();
       res.json({ success: true, name });
     } catch (e) {
       console.error('创建备份失败', e);
@@ -889,18 +1004,16 @@ function setupRoutes(app) {
       if (mcProcess) {
         pushLog(`准备还原备份: ${name}，正在停止服务器...`);
         stopMinecraft();
-        const waitStart = Date.now();
-        while (mcProcess && Date.now() - waitStart < 10000) {
-          await new Promise(r => setTimeout(r, 200));
-        }
-        if (mcProcess) {
+        const closed = await waitForMcProcessClose(10000);
+        if (!closed && mcProcess) {
           killMinecraft();
+          await waitForMcProcessClose(5000);
         }
       }
       const cwd = config.workingDir || process.cwd();
       pushLog(`开始从备份还原: ${name}`);
       await extractBackupArchive(file, cwd);
-      fs.appendFileSync(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
+      await fs.promises.appendFile(BACKUP_AUDIT, `${new Date().toISOString()} RESTORED ${name}\n`);
       const started = startMinecraft();
       pushLog(`备份还原完成: ${name}`);
       res.json({ success: true, restored: name, started });

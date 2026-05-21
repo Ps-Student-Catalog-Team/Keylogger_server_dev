@@ -11,6 +11,8 @@ const mysql = require('mysql2/promise');
 const jschardet = require('jschardet');
 const iconv = require('iconv-lite');
 const pLimit = require('p-limit');
+const sensitiveAppendLimit = pLimit(1);
+const extractPasswordQueue = pLimit(1);
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const open = require('open');
@@ -182,8 +184,10 @@ async function writeEncryptedFile(filePath, plainText) {
 }
 
 async function appendEncryptedFile(filePath, block) {
-    const existing = await readSensitiveFile(filePath);
-    await writeEncryptedFile(filePath, `${existing}${block}`);
+    await sensitiveAppendLimit(async () => {
+        const existing = await readSensitiveFile(filePath);
+        await writeEncryptedFile(filePath, `${existing}${block}`);
+    });
 }
 
 const WS_MESSAGE_TTL = 10 * 1000;
@@ -435,7 +439,10 @@ function getDefaultMcServerId() {
 }
 
 function rewriteLegacyMcRequests(req, res, next) {
-    const parts = req.path.split('/').filter(Boolean);
+    // 以 mount 点为准计算相对路径，避免直接使用 req.url 导致重复前缀
+    const mount = req.baseUrl || '/api/mc';
+    let relativePath = (req.originalUrl || req.url || '').slice(mount.length) || '';
+    const parts = relativePath.split('/').filter(Boolean);
     if (parts.length !== 1 || parts[0] === 'servers') {
         return next();
     }
@@ -443,8 +450,10 @@ function rewriteLegacyMcRequests(req, res, next) {
     if (!defaultId) {
         return res.status(404).json({ success: false, error: '未配置 MC 服务器实例' });
     }
-    req.url = `/${defaultId}${req.url}`;
-    next();
+    // 将请求内部重写为带 ID 的路径，供后续挂载到 /api/mc/:id 的路由匹配使用
+    // 当中间件挂载在 /api/mc 时，设置 req.url 为 " /<id><relativePath>" 即可
+    req.url = `/${defaultId}${relativePath}`;
+    return next();
 }
 
 function ensureMcServer(req, res, next) {
@@ -561,7 +570,9 @@ mcRouter.get('/logs/download', asyncHandler(async (req, res) => {
 }));
 
 mcRouter.post('/sync', asyncHandler(async (req, res) => {
-    res.json({ success: false, message: '当前实例的外部进程恢复尚未实现' });
+    // 临时实现：返回当前实例状态，提示完整的进程恢复功能待实现
+    const status = req.mcServer.getStatus ? req.mcServer.getStatus() : { running: false };
+    res.json({ success: true, message: '该功能正在开发中，返回当前实例状态供参考', status });
 }));
 
 mcRouter.post('/backup', asyncHandler(async (req, res) => {
@@ -1180,8 +1191,18 @@ async function migrateLegacyMcConfig() {
         const name = legacyConfig.name || 'default';
         const displayName = legacyConfig.display_name || legacyConfig.name || 'default';
         const config = Object.assign({}, legacyConfig, { name, display_name: displayName });
-        await executeWithRetry('INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)', [name, displayName, JSON.stringify(config), legacyConfig.autoRestart || legacyConfig.auto_start ? 1 : 0]);
-        logger.info('已迁移旧 MC 配置到 mc_servers 表');
+        // 先检查是否已存在同名记录，避免 UNIQUE 冲突日志
+        try {
+            const [existing] = await executeWithRetry('SELECT id FROM mc_servers WHERE name = ?', [name]);
+            if (existing && existing.length > 0) {
+                logger.info('跳过迁移：mc_servers 表已存在同名实例', { name });
+            } else {
+                await executeWithRetry('INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)', [name, displayName, JSON.stringify(config), legacyConfig.autoRestart || legacyConfig.auto_start ? 1 : 0]);
+                logger.info('已迁移旧 MC 配置到 mc_servers 表');
+            }
+        } catch (e) {
+            logger.warn('迁移旧 MC 配置时数据库操作失败', { error: e.message });
+        }
     } catch (error) {
         logger.warn('迁移旧 MC 配置失败:', error.message);
     }
@@ -2180,14 +2201,19 @@ class ClientManager {
 
     getActiveVersionInfo() {
         return new Promise((resolve, reject) => {
+            const useHttps = process.env.HTTPS_ENABLED === 'true' || process.env.HTTPS_ENABLED === '1' || String(CONFIG.serverBaseUrl || '').startsWith('https://');
+            const transport = useHttps ? https : http;
             const options = {
                 hostname: 'localhost',
                 port: CONFIG.httpPort || 3232,
                 path: '/api/update/check',
                 method: 'GET'
             };
+            if (useHttps) {
+                options.rejectUnauthorized = false;
+            }
 
-            const req = http.request(options, (res) => {
+            const req = transport.request(options, (res) => {
                 let data = '';
                 res.on('data', chunk => data += chunk);
                 res.on('end', () => {
@@ -2195,7 +2221,7 @@ class ClientManager {
                         const result = JSON.parse(data);
                         if (result.data && result.data.version) {
                             // 构造服务器的代理 URL，而不是 Alist URL
-                            const serverBaseUrl = CONFIG.serverBaseUrl || `http://localhost:${CONFIG.httpPort || 3232}`;
+                            const serverBaseUrl = CONFIG.serverBaseUrl || `${useHttps ? 'https' : 'http'}://localhost:${CONFIG.httpPort || 3232}`;
                             const serverUrl = `${serverBaseUrl}/api/update/download?version=${result.data.version}`;
                             
                             resolve({
@@ -3354,8 +3380,9 @@ function parseSensitiveSaves(content) {
 }
 
 app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
-    try {
-        let allFiles = [];
+    await extractPasswordQueue(async () => {
+        try {
+            let allFiles = [];
         // 获取日志文件列表
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
@@ -3550,6 +3577,7 @@ app.post('/api/extract-passwords', asyncHandler(async (req, res) => {
         logger.error('提取密码失败', { error: error.message, stack: error.stack });
         res.status(500).json({ success: false, error: '提取密码失败: ' + error.message });
     }
+    });
 }));
 
 async function clearExtractedPasswordFile() {
