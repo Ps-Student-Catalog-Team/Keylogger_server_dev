@@ -94,6 +94,29 @@ function loadConfig() {
   }
 }
 
+async function checkCompressionTools() {
+  try {
+    if (process.platform === 'win32') {
+      try {
+        const out = await runChildProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "(Get-Command Compress-Archive -ErrorAction SilentlyContinue).Name"], { windowsHide: true });
+        if (!out || !out.trim()) {
+          pushLog('警告：系统未检测到 PowerShell 的 Compress-Archive，备份压缩可能失败');
+        }
+      } catch (e) {
+        pushLog('警告：无法检测 PowerShell Compress-Archive，备份压缩可能失败');
+      }
+    } else {
+      try {
+        await runChildProcess('tar', ['--version'], { windowsHide: true });
+      } catch (e) {
+        pushLog('警告：系统未检测到 tar 命令，备份压缩可能失败');
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
 }
@@ -157,7 +180,8 @@ function configureAutoTasks() {
     try {
       const backupDir = getBackupDir();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const name = process.platform === 'win32' ? `backup-${timestamp}.zip` : `backup-${timestamp}.tar.gz`;
+      const idPart = mcProcess && mcProcess.pid ? String(mcProcess.pid) : 'local';
+      const name = process.platform === 'win32' ? `backup-${idPart}-${timestamp}.zip` : `backup-${idPart}-${timestamp}.tar.gz`;
       const dest = path.join(backupDir, name);
       const cwd = config.workingDir || process.cwd();
       const worldNames = ['world', 'world_nether', 'world_the_end'];
@@ -367,22 +391,46 @@ async function scanForMcProcess() {
     lookFor.push('java');
 
     if (process.platform === 'win32') {
-      const out = await runChildProcess('wmic', ['process', 'get', 'ProcessId,CommandLine'], { windowsHide: true });
-      const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      for (const line of lines) {
-        const m = line.match(/(.*)\s+(\d+)$/);
-        if (!m) continue;
-        const cmd = m[1] || '';
-        const pid = parseInt(m[2], 10);
-        if (!pid) continue;
-        const combined = cmd.toLowerCase();
-        if (lookFor.some(k => combined.indexOf(k.toLowerCase()) !== -1)) {
-          mcProcess = { pid, recovered: true };
-          pushLog(`通过进程扫描关联到 PID ${pid}`);
-          startStatsPolling();
-          return true;
+        try {
+          const out = await runChildProcess('wmic', ['process', 'get', 'ProcessId,CommandLine'], { windowsHide: true });
+          const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          for (const line of lines) {
+            const m = line.match(/(.*)\s+(\d+)$/);
+            if (!m) continue;
+            const cmd = m[1] || '';
+            const pid = parseInt(m[2], 10);
+            if (!pid) continue;
+            const combined = cmd.toLowerCase();
+            if (lookFor.some(k => combined.indexOf(k.toLowerCase()) !== -1)) {
+              mcProcess = { pid, recovered: true };
+              pushLog(`通过进程扫描关联到 PID ${pid}`);
+              startStatsPolling();
+              return true;
+            }
+          }
+        } catch (e) {
+          // 如果 wmic 不可用，回退到 PowerShell 的进程查询
+          try {
+            const out = await runChildProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process | Select-Object CommandLine,ProcessId | ConvertTo-Json -Depth 2"], { windowsHide: true });
+            let parsed = null;
+            try { parsed = JSON.parse(out); } catch (pe) { parsed = null; }
+            const entries = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+            for (const entry of entries) {
+              const cmd = String(entry.CommandLine || '');
+              const pid = parseInt(entry.ProcessId, 10);
+              if (!pid) continue;
+              const combined = cmd.toLowerCase();
+              if (lookFor.some(k => combined.indexOf(k.toLowerCase()) !== -1)) {
+                mcProcess = { pid, recovered: true };
+                pushLog(`通过 PowerShell 进程扫描关联到 PID ${pid}`);
+                startStatsPolling();
+                return true;
+              }
+            }
+          } catch (pe) {
+            // ignore
+          }
         }
-      }
     } else {
       const out = await runChildProcess('ps', ['-eo', 'pid,cmd'], { windowsHide: true });
       const lines = out.split(/\n/).map(l => l.trim()).filter(Boolean);
@@ -480,31 +528,24 @@ function waitForMcProcessClose(timeoutMs = 15000) {
 }
 
 function getWindowsProcessStats(pid) {
-  return new Promise((resolve) => {
-    const query = `(IDProcess=${pid} OR ParentProcessId=${pid})`;
-    const child = spawn('wmic', ['path', 'Win32_PerfFormattedData_PerfProc_Process', 'where', query, 'get', 'PercentProcessorTime,WorkingSetPrivate,IDProcess', '/format:list'], { windowsHide: true });
-    let output = '';
-    child.stdout.on('data', (data) => { output += data.toString(); });
-    child.on('close', () => {
-      const entries = output.split(/\r?\n\r?\n/).map((block) => block.trim()).filter(Boolean);
-      let totalCpu = 0;
-      let totalUsed = 0;
-      entries.forEach((block) => {
-        const result = {};
-        block.split(/\r?\n/).forEach((line) => {
-          const [key, value] = line.split('=');
-          if (key && value !== undefined) {
-            result[key.trim()] = value.trim();
-          }
-        });
-        const cpu = parseFloat(result.PercentProcessorTime || '0');
-        const used = parseInt(result.WorkingSetPrivate || '0', 10);
-        totalCpu += Number.isNaN(cpu) ? 0 : cpu;
-        totalUsed += Number.isNaN(used) ? 0 : used;
-      });
-      resolve({ cpu: totalCpu, memory: { used: totalUsed, total: os.totalmem() } });
-    });
-    child.on('error', () => resolve(null));
+  return new Promise(async (resolve) => {
+    try {
+      // 使用 PowerShell 的 Get-Process 回退（不再依赖 WMIC）
+      const cmd = `Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -Property CPU,WorkingSet64 | ConvertTo-Json`;
+      const out = await runChildProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { windowsHide: true });
+      let parsed = null;
+      try { parsed = JSON.parse(out); } catch (e) { parsed = null; }
+      if (!parsed) return resolve(null);
+      // parsed 可能是对象或数组
+      const proc = Array.isArray(parsed) ? parsed[0] : parsed;
+      const cpuSeconds = typeof proc.CPU === 'number' ? proc.CPU : (parseFloat(proc.CPU) || 0);
+      const used = Number(proc.WorkingSet64) || 0;
+      // CPU 以秒计，不转换为百分比；UI 可决定如何展示或进一步计算
+      resolve({ cpu: cpuSeconds, memory: { used, total: os.totalmem() } });
+    } catch (e) {
+      // 回退到 null
+      resolve(null);
+    }
   });
 }
 
@@ -745,7 +786,7 @@ async function cleanupOldBackups() {
     ensureMcDirectories();
     const backupDir = getBackupDir();
     const files = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
-    const list = files.map((name) => {
+    let list = files.map((name) => {
       const filePath = path.join(backupDir, name);
       const st = fs.statSync(filePath);
       return { name, path: filePath, mtime: st.mtimeMs };
@@ -765,6 +806,13 @@ async function cleanupOldBackups() {
           }
         }
       }
+      // 重新读取列表，避免后续按数量删除时依据过期前的静态列表误删
+      const refreshed = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
+      list = refreshed.map((name) => {
+        const filePath = path.join(backupDir, name);
+        const st = fs.statSync(filePath);
+        return { name, path: filePath, mtime: st.mtimeMs };
+      }).sort((a, b) => b.mtime - a.mtime);
     }
 
     if (Number.isInteger(config.backupRetentionCount) && config.backupRetentionCount > 0) {
@@ -787,6 +835,10 @@ async function cleanupOldBackups() {
 async function safeBackupWorlds(worldDirs, dest, cwd) {
   let saveOffSent = false;
   if (mcProcess) {
+    if (mcProcess.recovered === true) {
+      pushLog('检测到恢复的进程；跳过自动备份以避免不一致的世界快照');
+      throw new Error('进程处于恢复模式，无法执行安全备份');
+    }
     pushLog('正在执行 save-off/save-all 同步世界数据，以开始安全备份');
     saveOffSent = sendCommand('save-off');
     sendCommand('save-all');
@@ -1026,6 +1078,8 @@ function setupRoutes(app) {
 }
 
 loadConfig();
+// 检查压缩/解压工具可用性，提示管理员
+checkCompressionTools().catch(() => {});
 // 尝试根据 PID 文件或进程扫描恢复已存在的 MC 进程状态
 try {
   tryRestoreFromPidFile().catch(() => {});

@@ -406,7 +406,8 @@ class McServer {
     this.ensureDir(backupDir);
     const cwd = this.resolveWorkingDir();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = process.platform === 'win32' ? `backup-${timestamp}.zip` : `backup-${timestamp}.tar.gz`;
+    const idPart = (this.config && this.config.name) ? String(this.config.name).replace(/[^a-zA-Z0-9-_]/g, '_') : this.id;
+    const filename = process.platform === 'win32' ? `backup-${idPart}-${timestamp}.zip` : `backup-${idPart}-${timestamp}.tar.gz`;
     const dest = path.join(backupDir, filename);
     const worldDirs = ['world', 'world_nether', 'world_the_end']
       .map((dir) => path.join(cwd, dir))
@@ -506,6 +507,10 @@ class McServer {
   async safeBackupWorlds(worldDirs, dest, cwd) {
     let saveOffSent = false;
     if (this.process) {
+      if (this.process.recovered === true) {
+        this.pushLog('检测到恢复的进程；跳过自动备份以避免不一致的世界快照');
+        throw new Error('进程处于恢复模式，无法执行安全备份');
+      }
       this.pushLog('正在执行 save-off/save-all 同步世界数据，以开始安全备份');
       saveOffSent = this.sendCommand('save-off');
       if (!saveOffSent) {
@@ -530,7 +535,7 @@ class McServer {
       const backupDir = this.resolveBackupDir();
       this.ensureDir(backupDir);
       const files = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
-      const list = files.map((name) => {
+      let list = files.map((name) => {
         const filePath = path.join(backupDir, name);
         const st = fs.statSync(filePath);
         return { name, path: filePath, mtime: st.mtimeMs };
@@ -539,11 +544,18 @@ class McServer {
       const now = Date.now();
       if (Number.isFinite(this.config.backupRetentionDays) && this.config.backupRetentionDays > 0) {
         const cutoff = now - this.config.backupRetentionDays * 24 * 60 * 60 * 1000;
-        list.forEach((item) => {
+        for (const item of list) {
           if (item.mtime < cutoff) {
             try { fs.unlinkSync(item.path); } catch (e) { }
           }
-        });
+        }
+        // 重新读取列表，避免后续按数量删除时依据过期前的静态列表误删
+        const refreshed = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
+        list = refreshed.map((name) => {
+          const filePath = path.join(backupDir, name);
+          const st = fs.statSync(filePath);
+          return { name, path: filePath, mtime: st.mtimeMs };
+        }).sort((a, b) => b.mtime - a.mtime);
       }
 
       if (Number.isFinite(this.config.backupRetentionCount) && this.config.backupRetentionCount > 0) {
@@ -554,6 +566,26 @@ class McServer {
     } catch (e) {
       // ignore cleanup errors
     }
+  }
+
+  // 更通用的玩家解析，兼容多种服务端输出格式
+  parsePlayerListLine(line) {
+    const text = String(line || '').replace(/§[0-9A-FK-OR]/gi, '').trim();
+    const patterns = [
+      /There are\s+(\d+)\s+of\s+a\s+max\s+of\s+(\d+)\s+players\s+online:?\s*(.*)/i,
+      /当前在线\s*(\d+)\s*名?玩家[\s\S]*?最大\s*(\d+)\s*名?在线:?:?\s*(.*)/,
+      /There are (\d+)\/([0-9]+) players online:?\s*(.*)/i,
+    ];
+    for (const rx of patterns) {
+      const m = text.match(rx);
+      if (m) {
+        const count = parseInt(m[1], 10) || 0;
+        const max = parseInt(m[2], 10) || 0;
+        const players = m[3] ? m[3].replace(/^\[|\]$/g, '').split(/,\s*/).map(p => p.replace(/^"|"$/g, '').trim()).filter(Boolean) : [];
+        return { count, max, players };
+      }
+    }
+    return null;
   }
 }
 

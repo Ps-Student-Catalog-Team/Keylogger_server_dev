@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const McServer = require('./mc_server');
 
 class McServerManager {
@@ -99,7 +101,7 @@ class McServerManager {
     return server;
   }
 
-  async deleteServer(id) {
+  async deleteServer(id, options = { removeFiles: false }) {
     const sid = String(id);
     const srv = this.servers.get(sid);
     if (srv && srv.process) {
@@ -108,6 +110,27 @@ class McServerManager {
     if (this.dbPool) {
       await this.dbPool.execute('DELETE FROM mc_servers WHERE id = ?', [id]);
     }
+    // 可选地删除服务器相关备份、日志与工作目录（谨慎）
+    if (options && options.removeFiles && srv) {
+      try {
+        const backupDir = srv.resolveBackupDir ? srv.resolveBackupDir() : path.join(this.baseDir, 'backups', sid);
+        const logDir = srv.logDir || path.join(this.baseDir, 'logs', 'mc', sid);
+        const workDir = srv.resolveWorkingDir ? srv.resolveWorkingDir() : null;
+        if (backupDir && fs.existsSync(backupDir)) {
+          try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { }
+        }
+        if (logDir && fs.existsSync(logDir)) {
+          try { fs.rmSync(logDir, { recursive: true, force: true }); } catch (e) { }
+        }
+        // 仅在明确配置了自定义工作目录且该目录位于 baseDir 的子目录时才删除，防止误删重要路径
+        if (workDir && path.resolve(workDir).startsWith(path.resolve(this.baseDir))) {
+          try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) { }
+        }
+      } catch (e) {
+        // ignore file deletion errors
+      }
+    }
+
     this.servers.delete(sid);
     return true;
   }
