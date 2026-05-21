@@ -516,9 +516,10 @@ function handleWebSocketMessage(data) {
         state.wsMessageToken = data.authToken;
     }
     if (data && data.type === 'ws_connected') {
-        ws.send(JSON.stringify({ type: 'subscribe_mc' }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_players' }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_stats' }));
+        const serverId = window.currentMcServerId || '*';
+        ws.send(JSON.stringify({ type: 'subscribe_mc', serverId }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId }));
         window.mcPlayersSubscribed = true;
     }
     switch (data.type) {

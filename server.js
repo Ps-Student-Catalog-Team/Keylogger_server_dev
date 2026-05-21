@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { LRUCache } = require('lru-cache');
 const rateLimit = require('express-rate-limit');
-const mcController = require('./mc_controller');
+const McServerManager = require('./mc_manager');
 
 // ========== 版本缓存 ==========
 const versionCache = new LRUCache({
@@ -426,7 +426,181 @@ function userMiddleware(req, res, next) {
 
 app.use(userMiddleware);
 app.use(express.static(path.join(__dirname, 'public')));
-mcController.setupRoutes(app);
+
+let mcManager;
+
+function getDefaultMcServerId() {
+    const list = mcManager.getAllServersInfo();
+    return list.length ? String(list[0].id) : null;
+}
+
+function rewriteLegacyMcRequests(req, res, next) {
+    const parts = req.path.split('/').filter(Boolean);
+    if (parts.length !== 1 || parts[0] === 'servers') {
+        return next();
+    }
+    const defaultId = getDefaultMcServerId();
+    if (!defaultId) {
+        return res.status(404).json({ success: false, error: '未配置 MC 服务器实例' });
+    }
+    req.url = `/${defaultId}${req.url}`;
+    next();
+}
+
+function ensureMcServer(req, res, next) {
+    const { id } = req.params;
+    const server = mcManager.getServer(id);
+    if (!server) {
+        return res.status(404).json({ success: false, error: 'MC 服务器实例未找到' });
+    }
+    req.mcServer = server;
+    next();
+}
+
+app.get('/api/mc/servers', asyncHandler(async (req, res) => {
+    const list = mcManager.getAllServersInfo();
+    res.json({ success: true, servers: list });
+}));
+
+app.get('/api/mc/servers/:id', asyncHandler(async (req, res) => {
+    const server = mcManager.getServer(req.params.id);
+    if (!server) return res.status(404).json({ success: false, error: 'MC 服务器实例未找到' });
+    res.json({ success: true, server: { id: server.id, name: server.config.name, display_name: server.config.display_name, config: server.config, status: server.getStatus() } });
+}));
+
+app.post('/api/mc/servers', asyncHandler(async (req, res) => {
+    const { name, config } = req.body || {};
+    if (!name) return res.status(400).json({ success: false, error: 'name 不能为空' });
+    try {
+        const srv = await mcManager.createServer(name, config || {});
+        res.json({ success: true, id: srv.id });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+app.put('/api/mc/servers/:id', asyncHandler(async (req, res) => {
+    try {
+        const server = await mcManager.updateServer(req.params.id, req.body || {});
+        res.json({ success: true, server: { id: server.id, name: server.config.name, display_name: server.config.display_name, config: server.config, status: server.getStatus() } });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+app.delete('/api/mc/servers/:id', asyncHandler(async (req, res) => {
+    const id = req.params.id;
+    try {
+        await mcManager.deleteServer(id);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+const mcRouter = express.Router({ mergeParams: true });
+mcRouter.use(ensureMcServer);
+
+mcRouter.get('/config', asyncHandler(async (req, res) => {
+    res.json({ success: true, config: req.mcServer.config });
+}));
+
+mcRouter.post('/config', asyncHandler(async (req, res) => {
+    const config = req.body || {};
+    req.mcServer.setConfig(config);
+    await mcManager.updateServer(req.params.id, { config: req.mcServer.config });
+    res.json({ success: true, message: '配置已保存' });
+}));
+
+mcRouter.get('/players', asyncHandler(async (req, res) => {
+    const info = req.mcServer.playerInfo || { players: [], count: 0, max: 0 };
+    res.json({ success: true, players: info.players, count: info.count, max: info.max });
+}));
+
+mcRouter.post('/players/refresh', asyncHandler(async (req, res) => {
+    if (!req.mcServer.process) return res.status(400).json({ success: false, error: 'Minecraft 服务器未运行' });
+    const ok = req.mcServer.sendCommand('list');
+    if (!ok) return res.status(500).json({ success: false, error: '刷新玩家列表失败' });
+    res.json({ success: true, message: '玩家列表刷新中，请稍候' });
+}));
+
+mcRouter.post('/start', asyncHandler(async (req, res) => {
+    res.json({ success: req.mcServer.start(true) });
+}));
+
+mcRouter.post('/stop', asyncHandler(async (req, res) => {
+    res.json({ success: req.mcServer.stop() });
+}));
+
+mcRouter.post('/kill', asyncHandler(async (req, res) => {
+    res.json({ success: req.mcServer.kill() });
+}));
+
+mcRouter.post('/command', asyncHandler(async (req, res) => {
+    const { command } = req.body || {};
+    if (!command) return res.status(400).json({ success: false, error: '命令不能为空' });
+    res.json({ success: req.mcServer.sendCommand(String(command)) });
+}));
+
+mcRouter.get('/status', asyncHandler(async (req, res) => {
+    res.json(req.mcServer.getStatus());
+}));
+
+mcRouter.get('/logs', asyncHandler(async (req, res) => {
+    res.json({ success: true, logs: req.mcServer.getLogs() });
+}));
+
+mcRouter.get('/logs/download', asyncHandler(async (req, res) => {
+    const logFile = req.mcServer.logFile;
+    if (!fs.existsSync(logFile)) {
+        return res.status(404).json({ success: false, error: 'MC 日志文件不存在' });
+    }
+    res.download(logFile, 'mc_latest.log', (err) => {
+        if (err) res.status(500).json({ success: false, error: '下载日志失败' });
+    });
+}));
+
+mcRouter.post('/sync', asyncHandler(async (req, res) => {
+    res.json({ success: false, message: '当前实例的外部进程恢复尚未实现' });
+}));
+
+mcRouter.post('/backup', asyncHandler(async (req, res) => {
+    try {
+        const name = await req.mcServer.createBackup();
+        res.json({ success: true, name });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+mcRouter.get('/backups', asyncHandler(async (req, res) => {
+    try {
+        const backups = await req.mcServer.listBackups();
+        res.json({ success: true, backups });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+mcRouter.get('/backups/:name/download', asyncHandler(async (req, res) => {
+    const file = req.mcServer.getBackupPath(req.params.name);
+    if (!fs.existsSync(file)) return res.status(404).json({ success: false, error: '备份文件不存在' });
+    res.download(file, req.params.name, (err) => {
+        if (err) res.status(500).json({ success: false, error: '下载失败' });
+    });
+}));
+
+mcRouter.post('/backups/:name/restore', asyncHandler(async (req, res) => {
+    try {
+        await req.mcServer.restoreBackup(req.params.name);
+        res.json({ success: true, message: '备份还原成功' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}));
+
+app.use('/api/mc', rewriteLegacyMcRequests);
+app.use('/api/mc/:id', mcRouter);
 
 // ========== Alist 客户端 ==========
 class AlistClient {
@@ -790,6 +964,23 @@ const dbPoolConfig = {
 
 const pool = mysql.createPool(dbPoolConfig);
 
+mcManager = new McServerManager(pool, __dirname, (event, serverId, payload) => {
+    if (!wss || !wss.clients) return;
+    const message = Object.assign({ type: event, serverId }, payload || {});
+    wss.clients.forEach((ws) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const serverSet = ws.mcSubscriptions instanceof Set ? ws.mcSubscriptions : new Set();
+        const subscribedToThis = serverSet.has('*') || serverSet.has(String(serverId));
+        const subscribedAll = ws.subscribedMc === true;
+        const playersAllowed = ws.subscribedMcPlayers === true || subscribedAll || subscribedToThis;
+        const statsAllowed = ws.subscribedMcStats === true || subscribedAll || subscribedToThis;
+        if (message.type === 'mc_log' && !(subscribedAll || subscribedToThis)) return;
+        if (message.type === 'mc_players' && !playersAllowed) return;
+        if (message.type === 'mc_stats' && !statsAllowed) return;
+        sendWebSocketJson(ws, message);
+    });
+});
+
 pool.on('acquire', (connection) => {
     logger.debug(`数据库连接 ${connection.threadId} 被获取`);
 });
@@ -960,6 +1151,39 @@ async function initDatabase() {
     } catch (error) {
         logger.error('数据库初始化失败，程序终止', { error: error.message });
         throw new Error(`数据库初始化失败: ${error.message}`);
+    }
+}
+
+async function ensureMcServersTable() {
+    await executeWithRetry(`
+        CREATE TABLE IF NOT EXISTS mc_servers (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            display_name VARCHAR(100),
+            config JSON NOT NULL,
+            auto_start TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `, []);
+}
+
+async function migrateLegacyMcConfig() {
+    try {
+        const [rows] = await executeWithRetry('SELECT COUNT(*) AS count FROM mc_servers', []);
+        if (rows.length && rows[0].count > 0) return;
+        const configFile = path.join(__dirname, 'mc_config.json');
+        if (!fs.existsSync(configFile)) return;
+        let fileContent = fs.readFileSync(configFile, 'utf8');
+        let legacyConfig = {};
+        try { legacyConfig = JSON.parse(fileContent); } catch (e) { legacyConfig = {}; }
+        const name = legacyConfig.name || 'default';
+        const displayName = legacyConfig.display_name || legacyConfig.name || 'default';
+        const config = Object.assign({}, legacyConfig, { name, display_name: displayName });
+        await executeWithRetry('INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)', [name, displayName, JSON.stringify(config), legacyConfig.autoRestart || legacyConfig.auto_start ? 1 : 0]);
+        logger.info('已迁移旧 MC 配置到 mc_servers 表');
+    } catch (error) {
+        logger.warn('迁移旧 MC 配置失败:', error.message);
     }
 }
 
@@ -2111,8 +2335,28 @@ function handleWebSocketConnection(ws, req) {
                     break;
 
                 case 'subscribe_mc':
-                    ws.subscribedMc = true;
-                    sendWebSocketJson(ws, { type: 'subscribe_mc_result', success: true });
+                    if (!ws.mcSubscriptions || !(ws.mcSubscriptions instanceof Set)) {
+                        ws.mcSubscriptions = new Set();
+                    }
+                    if (!data.serverId || data.serverId === '*') {
+                        ws.mcSubscriptions.clear();
+                        ws.mcSubscriptions.add('*');
+                    } else {
+                        if (ws.mcSubscriptions.has('*')) ws.mcSubscriptions.delete('*');
+                        ws.mcSubscriptions.add(String(data.serverId));
+                    }
+                    sendWebSocketJson(ws, { type: 'subscribe_mc_result', success: true, serverId: data.serverId || '*' });
+                    break;
+
+                case 'unsubscribe_mc':
+                    if (ws.mcSubscriptions && ws.mcSubscriptions instanceof Set) {
+                        if (!data.serverId || data.serverId === '*') {
+                            ws.mcSubscriptions.clear();
+                        } else {
+                            ws.mcSubscriptions.delete(String(data.serverId));
+                        }
+                    }
+                    sendWebSocketJson(ws, { type: 'unsubscribe_mc_result', success: true, serverId: data.serverId || '*' });
                     break;
 
                 case 'subscribe_mc_players':
@@ -3520,6 +3764,19 @@ async function shutdown() {
 (async () => {
     try {
         await clientManager.init();
+        try {
+            await ensureMcServersTable();
+            await migrateLegacyMcConfig();
+        } catch (e) {
+            logger.warn('初始化 MC 服务器表失败:', { error: e.message });
+        }
+
+        // 加载 MC 多实例配置
+        try {
+            await mcManager.loadFromDatabase();
+        } catch (e) {
+            logger.warn('加载 MC 服务器列表失败:', { error: e.message });
+        }
         
         const httpsEnabled = process.env.HTTPS_ENABLED === 'true';
         let serverInstance = server;
@@ -3547,7 +3804,6 @@ async function shutdown() {
         
         wss = new WebSocket.Server({ server: serverInstance });
         wss.on('connection', handleWebSocketConnection);
-        mcController.setWebSocketServer(wss);
         
         serverInstance.listen(port, () => {
             logger.info(`${protocol.toUpperCase()} 服务运行在端口 ${port}`);

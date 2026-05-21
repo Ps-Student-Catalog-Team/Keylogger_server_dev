@@ -11,6 +11,15 @@ const MC_STATS_HISTORY_MAX = 240;
 const MC_STATS_CHART_RANGES = { '5m': 20, '15m': 60, '1h': 120 };
 let mcStatsChartRange = '15m';
 
+// 多服务器支持：当前选中的服务器 ID（为空时回退到旧的单实例接口）
+let currentMcServerId = null;
+
+function mcApi(path) {
+  // path should start with '/'
+  if (!currentMcServerId) return `/api/mc${path}`;
+  return `/api/mc/${currentMcServerId}${path}`;
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -37,7 +46,7 @@ function classifyMcLogLevel(text) {
   if (upper.includes('[INFO]')) {
     return 'info';
   }
-  return null;
+  return 'info';
 }
 
 function getMcLogStyle(level) {
@@ -208,7 +217,7 @@ function appendMcLog(line) {
   // Backups UI
   async function loadMcBackups() {
     try {
-      const resp = await fetch('/api/mc/backups');
+      const resp = await fetch(mcApi('/backups'));
       const data = await resp.json();
       const container = document.getElementById('mcBackupsList');
       if (!container) return;
@@ -235,7 +244,7 @@ function appendMcLog(line) {
   function downloadMcBackup(name) {
     try {
       const link = document.createElement('a');
-      link.href = `/api/mc/backups/${encodeURIComponent(name)}/download`;
+      link.href = mcApi(`/backups/${encodeURIComponent(name)}/download`);
       link.download = name;
       document.body.appendChild(link);
       link.click();
@@ -257,7 +266,7 @@ function appendMcLog(line) {
 
   async function restoreMcBackup(name) {
     try {
-      const resp = await fetch(`/api/mc/backups/${encodeURIComponent(name)}/restore`, { method: 'POST' });
+      const resp = await fetch(mcApi(`/backups/${encodeURIComponent(name)}/restore`), { method: 'POST' });
       const data = await resp.json();
       if (data.success) {
         showToast('还原已完成，服务器已重启（如果配置）', 'success');
@@ -273,7 +282,7 @@ function appendMcLog(line) {
 
   async function createMcBackup() {
     try {
-      const resp = await fetch('/api/mc/backup', { method: 'POST' });
+      const resp = await fetch(mcApi('/backup'), { method: 'POST' });
       const data = await resp.json();
       if (data.success) {
         showToast('备份已创建: ' + data.name, 'success');
@@ -306,14 +315,18 @@ function renderMcConsole() {
     const levelColorMap = {
         info: '#10b981',   // 绿色
         warn: '#f59e0b',   // 橙色
-        error: '#ef4444',   // 红色
-        debug: '#6b7280'   // 灰色
+        error: '#ef4444'   // 红色
     };
 
     output.innerHTML = lines.map((entry) => {
-        const lineStyle = entry.level ? `color: ${levelColorMap[entry.level] || 'inherit'};` : '';
-        const text = formatMcColorCodes(entry.text);
-        return `<div style="white-space: pre-wrap; word-break: break-word; ${lineStyle}">${text}</div>`;
+        let text = escapeHtml(entry.text);
+        // 匹配独立的 INFO、WARN、ERROR（不区分大小写，使用单词边界）
+        text = text.replace(/\b(INFO|WARN|ERROR)\b/gi, (match) => {
+            const lower = match.toLowerCase();
+            const color = levelColorMap[lower];
+            return `<span style="color: ${color};">${match}</span>`;
+        });
+        return `<div style="white-space: pre-wrap; word-break: break-word;">${text}</div>`;
     }).join('');
 
     if (mcAutoScroll) {
@@ -555,7 +568,7 @@ function confirmMcPlayerAction(player, action) {
 
 async function refreshMcPlayerList() {
   try {
-    const response = await fetch('/api/mc/players/refresh', { method: 'POST' });
+    const response = await fetch(mcApi('/players/refresh'), { method: 'POST' });
     const data = await response.json();
     if (data.success) {
       showToast(data.message || '玩家列表刷新中，请稍候', 'success');
@@ -576,7 +589,7 @@ async function refreshMcPlayerList() {
 function downloadMcLog() {
   try {
     const link = document.createElement('a');
-    link.href = '/api/mc/logs/download';
+    link.href = mcApi('/logs/download');
     link.download = 'mc_latest.log';
     document.body.appendChild(link);
     link.click();
@@ -590,7 +603,7 @@ function downloadMcLog() {
 
 async function loadMcConfig() {
   try {
-    const response = await fetch('/api/mc/config');
+    const response = await fetch(mcApi('/config'));
     const data = await response.json();
     if (!data.success) {
       showToast(data.message || '获取 MC 配置失败', 'error');
@@ -636,7 +649,7 @@ async function saveMcConfig() {
   const backupRetentionDays = parseInt(document.getElementById('mcBackupRetentionDays')?.value || '0', 10) || undefined;
   const playerListIntervalSeconds = parseInt(document.getElementById('mcPlayerListInterval')?.value || '0', 10) || undefined;
   try {
-    const response = await fetch('/api/mc/config', {
+    const response = await fetch(mcApi('/config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fullCommand, workingDir, backupDir, autoBackupEnabled, autoBackupCron, backupRetentionCount, backupRetentionDays, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds }),
@@ -656,7 +669,7 @@ async function saveMcConfig() {
 
 async function loadMcStatus() {
   try {
-    const response = await fetch('/api/mc/status');
+    const response = await fetch(mcApi('/status'));
     const data = await response.json();
     const statusNode = document.getElementById('mcStatus');
     const pidNode = document.getElementById('mcPid');
@@ -677,7 +690,7 @@ async function loadMcStatus() {
 
 async function syncMcStatus() {
   try {
-    const resp = await fetch('/api/mc/sync', { method: 'POST' });
+    const resp = await fetch(mcApi('/sync'), { method: 'POST' });
     const data = await resp.json();
     if (data.success) {
       showToast(data.message || '已同步服务器状态', 'success');
@@ -706,7 +719,7 @@ if (mcSyncBtn) {
 
 async function loadMcLogs() {
   try {
-    const response = await fetch('/api/mc/logs');
+    const response = await fetch(mcApi('/logs'));
     const data = await response.json();
     if (!data.success) {
       showToast(data.message || '获取 MC 日志失败', 'error');
@@ -737,7 +750,7 @@ function updateMcAutoRestartDisplay(enabled) {
 
 async function loadMcPlayers() {
   try {
-    const response = await fetch('/api/mc/players');
+    const response = await fetch(mcApi('/players'));
     const data = await response.json();
     if (data.success) {
       renderPlayerList(data.players || [], data.count || 0, data.max || 0);
@@ -750,7 +763,7 @@ async function loadMcPlayers() {
 
 async function startMinecraftServer() {
   try {
-    const response = await fetch('/api/mc/start', { method: 'POST' });
+    const response = await fetch(mcApi('/start'), { method: 'POST' });
     const data = await response.json();
     if (data.success) {
       showToast('Minecraft 服务器启动中', 'success');
@@ -769,20 +782,20 @@ async function startMinecraftServer() {
 async function stopMinecraftServer() {
   try {
     // 检查当前状态，若为恢复（只读）态，则提示用户选择强制终止
-    const st = await fetch('/api/mc/status');
+    const st = await fetch(mcApi('/status'));
     const stData = await st.json();
     if (stData.running && stData.recovered) {
       const msg = '检测到服务器为恢复（只读）状态，无法通过控制台发送 stop。是否执行强制终止（kill）？';
       if (typeof showConfirmModal === 'function') {
         showConfirmModal('强制终止', msg, async () => {
-          const resp = await fetch('/api/mc/kill', { method: 'POST' });
+          const resp = await fetch(mcApi('/kill'), { method: 'POST' });
           const data = await resp.json();
           if (data.success) showToast('已强制终止 MC 服务器', 'success');
           else showToast('强制终止失败', 'error');
           await loadMcStatus();
         });
       } else if (window.confirm(msg)) {
-        const resp = await fetch('/api/mc/kill', { method: 'POST' });
+        const resp = await fetch(mcApi('/kill'), { method: 'POST' });
         const data = await resp.json();
         if (data.success) showToast('已强制终止 MC 服务器', 'success');
         else showToast('强制终止失败', 'error');
@@ -791,7 +804,7 @@ async function stopMinecraftServer() {
       return;
     }
 
-    const response = await fetch('/api/mc/stop', { method: 'POST' });
+    const response = await fetch(mcApi('/stop'), { method: 'POST' });
     const data = await response.json();
     if (data.success) {
       showToast('已发送停止命令', 'success');
@@ -807,7 +820,7 @@ async function stopMinecraftServer() {
 
 async function killMinecraftServer() {
   try {
-    const response = await fetch('/api/mc/kill', { method: 'POST' });
+    const response = await fetch(mcApi('/kill'), { method: 'POST' });
     const data = await response.json();
     if (data.success) {
       showToast('已强制终止 MC 服务器', 'success');
@@ -831,7 +844,7 @@ async function sendMcCommand(commandInput) {
   try {
     // 若服务器处于恢复（只读）态，禁止发送命令
     try {
-      const st = await fetch('/api/mc/status');
+      const st = await fetch(mcApi('/status'));
       const stData = await st.json();
       if (stData.running && stData.recovered) {
         showToast('当前服务器为恢复（只读）状态，无法发送控制台命令，请使用强制终止或在主机上重启服务器', 'warning');
@@ -840,7 +853,7 @@ async function sendMcCommand(commandInput) {
     } catch (e) {
       // ignore status check errors and try to send command
     }
-    const response = await fetch('/api/mc/command', {
+    const response = await fetch(mcApi('/command'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command }),
@@ -894,4 +907,112 @@ if (mcConsoleFilter) {
   });
 }
 
+async function loadMcServers() {
+  try {
+    const res = await fetch('/api/mc/servers');
+    const data = await res.json();
+    const select = document.getElementById('mcServerSelect');
+    if (!select) return;
+    if (!data || !Array.isArray(data.servers)) {
+      select.innerHTML = '<option value="">(未配置实例)</option>';
+      currentMcServerId = null;
+      return;
+    }
+    const previous = currentMcServerId;
+    const options = data.servers.map((s) => `<option value="${s.id}">${s.display_name || s.name || s.id}</option>`).join('');
+    select.innerHTML = options;
+    if (previous && data.servers.some((s) => String(s.id) === String(previous))) {
+      currentMcServerId = previous;
+    } else {
+      currentMcServerId = data.servers.length ? String(data.servers[0].id) : null;
+    }
+    select.value = currentMcServerId || '';
+    if (currentMcServerId) {
+      switchMcServer();
+    }
+  } catch (e) {
+    console.warn('加载 MC 服务器列表失败', e);
+  }
+}
+
+function sendMcSubscription(serverId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const payload = { type: 'subscribe_mc', serverId: serverId || '*' };
+  try { ws.send(JSON.stringify(payload)); } catch (e) { console.warn('订阅 MC 事件失败', e); }
+}
+
+function disconnectMcSubscription(serverId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const payload = { type: 'unsubscribe_mc', serverId: serverId || '*' };
+  try { ws.send(JSON.stringify(payload)); } catch (e) { console.warn('取消订阅 MC 事件失败', e); }
+}
+
+function switchMcServer() {
+  const sel = document.getElementById('mcServerSelect');
+  if (!sel) return;
+  const newId = sel.value || null;
+  if (newId === currentMcServerId) return;
+  if (currentMcServerId) {
+    disconnectMcSubscription(currentMcServerId);
+  }
+  currentMcServerId = newId;
+  loadMcStatus();
+  loadMcLogs();
+  loadMcPlayers();
+  loadMcConfig();
+  sendMcSubscription(currentMcServerId);
+}
+
+async function createMcServer() {
+  const name = window.prompt('请输入新 MC 服务器实例名称:');
+  if (!name) return;
+  try {
+    const response = await fetch('/api/mc/servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 0 } })
+    });
+    const result = await response.json();
+    if (result.success) {
+      showToast?.('MC 实例已创建', 'success');
+      await loadMcServers();
+    } else {
+      showToast?.(result.error || '创建实例失败', 'error');
+    }
+  } catch (e) {
+    console.error('创建 MC 实例失败', e);
+    showToast?.('创建实例失败', 'error');
+  }
+}
+
+async function deleteMcServer(id) {
+  try {
+    const response = await fetch(`/api/mc/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const result = await response.json();
+    if (result.success) {
+      showToast?.('MC 实例已删除', 'success');
+      currentMcServerId = null;
+      await loadMcServers();
+    } else {
+      showToast?.(result.error || '删除实例失败', 'error');
+    }
+  } catch (e) {
+    console.error('删除 MC 实例失败', e);
+    showToast?.('删除实例失败', 'error');
+  }
+}
+
+function confirmDeleteMcServer() {
+  const sel = document.getElementById('mcServerSelect');
+  if (!sel || !sel.value) {
+    showToast?.('请选择要删除的实例', 'warning');
+    return;
+  }
+  const msg = `确认删除 MC 实例 ${sel.options[sel.selectedIndex]?.text || sel.value} 吗？此操作不可撤销。`;
+  if (window.confirm(msg)) {
+    deleteMcServer(sel.value);
+  }
+}
+
 loadCommandHistory();
+loadMcServers();

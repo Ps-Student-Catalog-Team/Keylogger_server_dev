@@ -1759,6 +1759,11 @@
 
             <div id="mcToolbar" class="toolbar" style="display: none; flex-wrap: wrap; gap: 0.75rem;">
                 <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                    <select id="mcServerSelect" onchange="switchMcServer()" style="min-width: 180px; max-width: 260px;">
+                        <option value="">(未选择实例)</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="createMcServer()"><i class="fas fa-plus"></i> 新增实例</button>
+                    <button class="btn btn-danger" onclick="confirmDeleteMcServer()"><i class="fas fa-trash-alt"></i> 删除实例</button>
                     <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
                     <button class="btn btn-warning" onclick="stopMinecraftServer()"><i class="fas fa-stop"></i> 停止</button>
                     <button class="btn btn-danger" onclick="killMinecraftServer()"><i class="fas fa-bomb"></i> 强制终止</button>
