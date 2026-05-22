@@ -38,15 +38,22 @@ class McServer {
     this.process = null;
     this.playerInfo = { players: [], count: 0, max: 0 };
     this.latestTps = null;
+    this.latestCpu = 0;
+    this.latestMemory = { used: 0, total: os.totalmem() };
     this.manualStopRequested = false;
     this.restartAttempts = 0;
     this.playerListTimer = null;
+    this.statsTimer = null;
+    this.lastCpuTime = null;
+    this.lastCpuTimestamp = null;
+    this.lastCpuPid = null;
     this.autoBackupTimer = null;
     this.lastAutoBackupKey = null;
     this.backupInProgress = false;
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
     this.configureAutoTasks();
+    this.checkCompressionTools().catch(() => {});
   }
 
   emit(event, payload = {}) {
@@ -286,8 +293,136 @@ class McServer {
       const tps = parseFloat(tpsMatch[1]);
       if (!Number.isNaN(tps)) {
         this.latestTps = tps;
-        this.emit('mc_stats', { cpu: null, memory: null, tps: tps });
+        this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: tps });
       }
+    }
+  }
+
+  async getMcProcessStats(pid) {
+    if (!pid) return null;
+    if (process.platform === 'win32') {
+      return this.getWindowsProcessStats(pid);
+    }
+    return this.getUnixProcessStats(pid);
+  }
+
+  async getWindowsProcessStats(pid) {
+    try {
+      const out = await this.runChildProcess('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -Property CPU,WorkingSet64 | ConvertTo-Json`
+      ], { windowsHide: true });
+      let parsed = null;
+      try { parsed = JSON.parse(out); } catch (e) { return null; }
+      const proc = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (!proc || proc.CPU === undefined) return null;
+      const cpuSeconds = typeof proc.CPU === 'number' ? proc.CPU : (parseFloat(proc.CPU) || 0);
+      const used = Number(proc.WorkingSet64) || 0;
+      const now = Date.now();
+      let cpuPercent = 0;
+      if (this.lastCpuPid === pid && this.lastCpuTimestamp && this.lastCpuTime !== null) {
+        const elapsed = (now - this.lastCpuTimestamp) / 1000;
+        const delta = cpuSeconds - this.lastCpuTime;
+        if (elapsed > 0 && delta >= 0) {
+          const cpus = os.cpus().length || 1;
+          cpuPercent = Math.min(100, Math.max(0, (delta / elapsed) * 100 / cpus));
+        }
+      }
+      this.lastCpuPid = pid;
+      this.lastCpuTime = cpuSeconds;
+      this.lastCpuTimestamp = now;
+      return { cpu: cpuPercent, memory: { used, total: os.totalmem() } };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  getUnixProcessStats(pid) {
+    return new Promise((resolve) => {
+      const stats = [];
+      const gather = (processId, callback) => {
+        const proc = spawn('ps', ['-p', String(processId), '-o', '%cpu=', '-o', 'rss='], { windowsHide: true });
+        let output = '';
+        proc.stdout.on('data', (data) => { output += data.toString(); });
+        proc.on('close', () => {
+          const parts = output.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            stats.push({ cpu: parseFloat(parts[0] || '0'), rss: parseInt(parts[1] || '0', 10) * 1024 });
+          }
+          callback();
+        });
+        proc.on('error', () => callback());
+      };
+
+      const gatherChildren = (processId, callback) => {
+        const proc = spawn('ps', ['--ppid', String(processId), '-o', 'pid='], { windowsHide: true });
+        let output = '';
+        proc.stdout.on('data', (data) => { output += data.toString(); });
+        proc.on('close', () => {
+          const childPids = output.trim().split(/\s+/).filter(Boolean);
+          if (childPids.length === 0) return callback();
+          let remaining = childPids.length;
+          childPids.forEach((childPid) => {
+            gather(childPid, () => {
+              remaining -= 1;
+              if (remaining === 0) callback();
+            });
+          });
+        });
+        proc.on('error', () => callback());
+      };
+
+      gather(pid, () => {
+        gatherChildren(pid, () => {
+          const totalCpu = stats.reduce((sum, item) => sum + (Number.isFinite(item.cpu) ? item.cpu : 0), 0);
+          const totalUsed = stats.reduce((sum, item) => sum + (Number.isFinite(item.rss) ? item.rss : 0), 0);
+          resolve({ cpu: totalCpu, memory: { used: totalUsed, total: os.totalmem() } });
+        });
+      });
+    });
+  }
+
+  startStatsPolling() {
+    this.stopStatsPolling();
+    if (!this.process || !this.process.pid) return;
+    const poll = async () => {
+      if (!this.process || !this.process.pid) return;
+      const stats = await this.getMcProcessStats(this.process.pid);
+      if (stats) {
+        this.latestCpu = stats.cpu;
+        this.latestMemory = stats.memory;
+        this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: this.latestTps });
+      }
+    };
+    poll();
+    this.statsTimer = setInterval(poll, 1000);
+  }
+
+  stopStatsPolling() {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
+  async checkCompressionTools() {
+    try {
+      if (process.platform === 'win32') {
+        const out = await this.runChildProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "(Get-Command Compress-Archive -ErrorAction SilentlyContinue).Name"], { windowsHide: true });
+        if (!out || !out.trim()) {
+          this.pushLog('警告：系统未检测到 PowerShell 的 Compress-Archive，备份压缩可能失败');
+        }
+      } else {
+        try {
+          await this.runChildProcess('tar', ['--version'], { windowsHide: true });
+        } catch (e) {
+          this.pushLog('警告：系统未检测到 tar 命令，备份压缩可能失败');
+        }
+      }
+    } catch (e) {
+      this.pushLog('警告：无法检测备份压缩工具，备份可能失败');
     }
   }
 
@@ -318,6 +453,7 @@ class McServer {
         this.pushLog(`进程已退出，退出码: ${code}`);
         this.process = null;
         this.stopPlayerListPolling();
+        this.stopStatsPolling();
         if (!this.manualStopRequested && this.config.autoRestart) {
           this.scheduleAutoRestart();
         }
@@ -328,6 +464,7 @@ class McServer {
       });
 
       this.startPlayerListPolling();
+      this.startStatsPolling();
       return true;
     } catch (e) {
       this.pushLog(`启动异常: ${e.message}`);
@@ -341,6 +478,7 @@ class McServer {
     try {
       this.manualStopRequested = true;
       this.stopPlayerListPolling();
+      this.stopStatsPolling();
       this.stopAutoRestart();
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write('stop\n');
@@ -358,6 +496,7 @@ class McServer {
     try {
       this.manualStopRequested = true;
       this.stopPlayerListPolling();
+      this.stopStatsPolling();
       this.stopAutoRestart();
       const pid = this.process.pid;
       if (!pid) return false;

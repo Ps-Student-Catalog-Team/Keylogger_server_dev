@@ -44,6 +44,9 @@ let wsServer = null;
 let latestTps = null;
 let latestCpu = 0;
 let latestMemory = { used: 0, total: os.totalmem() };
+let lastCpuTime = null;
+let lastCpuTimestamp = null;
+let lastCpuPid = null;
 let autoBackupTimer = null;
 let lastAutoBackupKey = null;
 let backupInProgress = false;
@@ -180,7 +183,7 @@ function configureAutoTasks() {
     try {
       const backupDir = getBackupDir();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const idPart = mcProcess && mcProcess.pid ? String(mcProcess.pid) : 'local';
+      const idPart = config.name ? String(config.name).replace(/[^a-zA-Z0-9-_]/g, '_') : (mcProcess && mcProcess.pid ? String(mcProcess.pid) : 'local');
       const name = process.platform === 'win32' ? `backup-${idPart}-${timestamp}.zip` : `backup-${idPart}-${timestamp}.tar.gz`;
       const dest = path.join(backupDir, name);
       const cwd = config.workingDir || process.cwd();
@@ -536,14 +539,24 @@ function getWindowsProcessStats(pid) {
       let parsed = null;
       try { parsed = JSON.parse(out); } catch (e) { parsed = null; }
       if (!parsed) return resolve(null);
-      // parsed 可能是对象或数组
       const proc = Array.isArray(parsed) ? parsed[0] : parsed;
       const cpuSeconds = typeof proc.CPU === 'number' ? proc.CPU : (parseFloat(proc.CPU) || 0);
       const used = Number(proc.WorkingSet64) || 0;
-      // CPU 以秒计，不转换为百分比；UI 可决定如何展示或进一步计算
-      resolve({ cpu: cpuSeconds, memory: { used, total: os.totalmem() } });
+      const now = Date.now();
+      let cpuPercent = 0;
+      if (lastCpuPid === pid && lastCpuTimestamp && lastCpuTime !== null) {
+        const elapsed = (now - lastCpuTimestamp) / 1000;
+        const delta = cpuSeconds - lastCpuTime;
+        if (elapsed > 0 && delta >= 0) {
+          const cpus = os.cpus().length || 1;
+          cpuPercent = Math.min(100, Math.max(0, (delta / elapsed) * 100 / cpus));
+        }
+      }
+      lastCpuPid = pid;
+      lastCpuTime = cpuSeconds;
+      lastCpuTimestamp = now;
+      resolve({ cpu: cpuPercent, memory: { used, total: os.totalmem() } });
     } catch (e) {
-      // 回退到 null
       resolve(null);
     }
   });
