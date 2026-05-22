@@ -331,34 +331,48 @@ class McServer {
 
   async getWindowsProcessStats(pid) {
     try {
-      const out = await this.runChildProcess('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -Property CPU,WorkingSet64 | ConvertTo-Json`
-      ], { windowsHide: true });
-      let parsed = null;
-      try { parsed = JSON.parse(out); } catch (e) { return null; }
-      const proc = Array.isArray(parsed) ? parsed[0] : parsed;
-      if (!proc || proc.CPU === undefined) return null;
-      const cpuSeconds = typeof proc.CPU === 'number' ? proc.CPU : (parseFloat(proc.CPU) || 0);
-      const used = Number(proc.WorkingSet64) || 0;
-      const now = Date.now();
-      let cpuPercent = 0;
-      if (this.lastCpuPid === pid && this.lastCpuTimestamp && this.lastCpuTime !== null) {
-        const elapsed = (now - this.lastCpuTimestamp) / 1000;
-        const delta = cpuSeconds - this.lastCpuTime;
-        if (elapsed > 0 && delta >= 0) {
-          const cpus = os.cpus().length || 1;
-          cpuPercent = Math.min(100, Math.max(0, (delta / elapsed) * 100 / cpus));
+        // 输出进程名称和内存（名称应为 java）
+        const out = await this.runChildProcess('powershell.exe', [
+            '-NoProfile', '-NonInteractive', '-Command',
+            `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and $p.Name -eq 'java') { Write-Host $p.Name; Write-Host $p.TotalProcessorTime.TotalSeconds; Write-Host $p.WorkingSet64 }`
+        ], { windowsHide: true });
+
+        if (!out || !out.trim()) {
+            this.pushLog(`进程 ${pid} 不存在或不是 Java 进程，无法获取统计信息`);
+            return null;
         }
-      }
-      this.lastCpuPid = pid;
-      this.lastCpuTime = cpuSeconds;
-      this.lastCpuTimestamp = now;
-      return { cpu: cpuPercent, memory: { used, total: os.totalmem() } };
+
+        const lines = out.trim().split(/\r?\n/);
+        if (lines.length < 3) return null;
+
+        const processName = lines[0].trim();
+        if (processName.toLowerCase() !== 'java') {
+            this.pushLog(`进程 ${pid} 不是 Java 进程 (实际: ${processName})，忽略统计`);
+            return null;
+        }
+
+        const totalSeconds = parseFloat(lines[1]);
+        let used = Number(lines[2].replace(/,/g, ''));   // 移除千分位逗号
+        if (isNaN(totalSeconds) || isNaN(used)) return null;
+
+        const now = Date.now();
+        let cpuPercent = 0;
+        const cpus = os.cpus().length;
+        if (this.lastCpuPid === pid && this.lastCpuTimestamp && this.lastCpuTime !== null) {
+            const elapsed = (now - this.lastCpuTimestamp) / 1000;
+            const delta = totalSeconds - this.lastCpuTime;
+            if (elapsed > 0 && delta >= 0) {
+                cpuPercent = Math.min(100, Math.max(0, (delta / elapsed) / cpus * 100));
+            }
+        }
+        this.lastCpuPid = pid;
+        this.lastCpuTime = totalSeconds;
+        this.lastCpuTimestamp = now;
+
+        return { cpu: cpuPercent, memory: { used, total: os.totalmem() } };
     } catch (e) {
-      return null;
+        this.pushLog(`获取 Windows 进程统计异常: ${e.message}`);
+        return null;
     }
   }
 
@@ -419,7 +433,7 @@ class McServer {
         this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: this.latestTps });
       }
     };
-    poll();
+    poll(); // 立即执行一次
     this.statsTimer = setInterval(poll, 1000);
   }
 
@@ -453,46 +467,63 @@ class McServer {
     if (this.process) return false;
     const command = this.getLaunchCommand();
     if (!command) {
-      this.pushLog('启动命令未配置，无法启动');
-      return false;
+        this.pushLog('启动命令未配置，无法启动');
+        return false;
     }
     const cwd = this.resolveWorkingDir();
     this.ensureLogDir();
 
     try {
-      this.manualStopRequested = false;
-      if (manual) this.restartAttempts = 0;
-      this.process = spawn(command, [], { cwd, shell: true, windowsHide: true });
-      this.pushLog(`启动命令: ${command}`);
+        this.manualStopRequested = false;
+        if (manual) this.restartAttempts = 0;
+        // 使用 shell: true 启动
+        this.process = spawn(command, [], { cwd, shell: true, windowsHide: true });
+        const originalPid = this.process.pid;
+        this.pushLog(`启动命令: ${command}，初始 PID: ${originalPid}`);
 
-      if (this.process.stdout) {
-        this.process.stdout.on('data', (data) => this.pushLog(data.toString()));
-      }
-      if (this.process.stderr) {
-        this.process.stderr.on('data', (data) => this.pushLog('[STDERR] ' + data.toString()));
-      }
-
-      this.process.on('close', (code) => {
-        this.pushLog(`进程已退出，退出码: ${code}`);
-        this.process = null;
-        this.stopPlayerListPolling();
-        this.stopStatsPolling();
-        if (!this.manualStopRequested && this.config.autoRestart) {
-          this.scheduleAutoRestart();
+        // 设置 stdout/stderr 监听
+        if (this.process.stdout) {
+            this.process.stdout.on('data', (data) => this.pushLog(data.toString()));
         }
-      });
-      this.process.on('error', (err) => {
-        this.pushLog(`启动失败: ${err.message}`);
-        this.process = null;
-      });
+        if (this.process.stderr) {
+            this.process.stderr.on('data', (data) => this.pushLog('[STDERR] ' + data.toString()));
+        }
 
-      this.startPlayerListPolling();
-      this.startStatsPolling();
-      return true;
+        this.process.on('close', (code) => {
+            this.pushLog(`进程已退出，退出码: ${code}`);
+            this.process = null;
+            this.stopPlayerListPolling();
+            this.stopStatsPolling();
+            if (!this.manualStopRequested && this.config.autoRestart) {
+                this.scheduleAutoRestart();
+            }
+        });
+        this.process.on('error', (err) => {
+            this.pushLog(`启动失败: ${err.message}`);
+            this.process = null;
+        });
+
+        // === 新增：延迟查找真正的 Java 子进程 ===
+        setTimeout(async () => {
+            if (!this.process) return;
+            const javaPid = await this.findJavaSubProcess(originalPid, 8000);
+            if (javaPid && javaPid !== originalPid) {
+                this.process.pid = javaPid;   // 更新为实际 Java 进程 PID
+                this.pushLog(`已将监控 PID 从 ${originalPid} 更新为 ${javaPid}`);
+                // 重启 stats 轮询，使用新的 PID
+                this.stopStatsPolling();
+                this.startStatsPolling();
+            }
+        }, 2000);  // 等待 2 秒让子进程启动
+        // === 新增结束 ===
+
+        this.startPlayerListPolling();
+        this.startStatsPolling();
+        return true;
     } catch (e) {
-      this.pushLog(`启动异常: ${e.message}`);
-      this.process = null;
-      return false;
+        this.pushLog(`启动异常: ${e.message}`);
+        this.process = null;
+        return false;
     }
   }
 
@@ -655,12 +686,17 @@ class McServer {
   async runChildProcess(command, args, options = {}) {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, { windowsHide: true, ...options });
-      let output = '';
-      child.stdout.on('data', (data) => { output += data.toString(); });
-      child.stderr.on('data', (data) => { output += data.toString(); });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (data) => { stdout += data.toString(); });
+      child.stderr.on('data', (data) => { stderr += data.toString(); });
       child.on('close', (code) => {
-        if (code === 0) resolve(output);
-        else reject(new Error(output || `退出码 ${code}`));
+        // 即使退出码非0，只要有 stdout 输出就视为成功
+        if (stdout.trim()) {
+          resolve(stdout);
+        } else {
+          reject(new Error(stderr || `退出码 ${code}`));
+        }
       });
       child.on('error', (err) => reject(err));
     });
@@ -748,6 +784,29 @@ class McServer {
       }
     }
     return null;
+  }
+
+  async findJavaSubProcess(parentPid, timeoutMs = 8000) {
+      const startTime = Date.now();
+      this.pushLog(`开始查找父进程 ${parentPid} 下的 Java 子进程...`);
+      while (Date.now() - startTime < timeoutMs) {
+          try {
+              const out = await this.runChildProcess('powershell.exe', [
+                  '-NoProfile', '-NonInteractive', '-Command',
+                  `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} -and $_.Name -eq 'java.exe' } | Select-Object -First 1 -ExpandProperty ProcessId`
+              ], { windowsHide: true });
+              const pid = parseInt(out.trim(), 10);
+              if (!isNaN(pid) && pid > 0) {
+                  this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
+                  return pid;
+              }
+          } catch (e) {
+              // 忽略错误，继续重试
+          }
+          await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      this.pushLog(`警告：未能在 ${timeoutMs}ms 内找到 Java 子进程，将保持原有 PID (${parentPid})`);
+      return null;
   }
 }
 

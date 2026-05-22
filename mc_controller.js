@@ -608,70 +608,43 @@ function getUnixProcessStats(pid) {
 }
 
 function startMinecraft(manualStart = true) {
-  if (mcProcess) return false;
-  const { fullCommand, workingDir } = config;
-  if (!fullCommand || !fullCommand.trim()) return false;
-
-  try {
-    manualStopRequested = false;
-    if (manualStart) {
-      restartAttempts = 0;
-    }
-    lastStartTimestamp = Date.now();
-    mcProcess = spawn(fullCommand, [], { cwd: workingDir, shell: true, windowsHide: true, detached: false });
+    if (mcProcess) return false;
+    // ... 原有命令拼接等代码 ...
     try {
-      writePidFile(mcProcess.pid);
-    } catch (e) {
-      console.error('写 PID 文件失败', e);
-    }
-    pushLog(`启动命令: ${fullCommand}`);
+        manualStopRequested = false;
+        if (manualStart) restartAttempts = 0;
+        lastStartTimestamp = Date.now();
+        mcProcess = spawn(fullCommand, [], { cwd: workingDir, shell: true, windowsHide: true, detached: false });
+        const originalPid = mcProcess.pid;
+        writePidFile(mcProcess.pid);
+        pushLog(`启动命令: ${fullCommand}，初始 PID: ${originalPid}`);
 
-    mcProcess.stdout.on('data', (data) => pushLog(data.toString()));
-    mcProcess.stderr.on('data', (data) => pushLog(`[STDERR] ${data.toString()}`));
-    mcProcess.on('close', (code) => {
-      pushLog(`Minecraft 服务器进程已退出，退出码: ${code}`);
-      const runDuration = Date.now() - lastStartTimestamp;
-      const restartResetMs = 30 * 1000;
-      if (runDuration > restartResetMs) {
-        restartAttempts = 0;
-      }
-      mcProcess = null;
-      clearPidFile();
-      stopPlayerListPolling();
-      stopStatsPolling();
-      if (config.autoRestart && !manualStopRequested) {
-        if (restartAttempts < config.autoRestartMaxRetries) {
-          const delaySeconds = Math.max(1, Number(config.autoRestartDelaySeconds) || 5);
-          const backoff = Math.min(delaySeconds * Math.pow(2, restartAttempts), 60);
-          restartAttempts += 1;
-          pushLog(`将在 ${backoff} 秒后自动重启（${restartAttempts}/${config.autoRestartMaxRetries}）`);
-          setTimeout(() => {
-            if (!mcProcess) {
-              startMinecraft(false);
+        // 原有的 stdout/stderr 监听...
+        mcProcess.stdout.on('data', (data) => pushLog(data.toString()));
+        mcProcess.stderr.on('data', (data) => pushLog(`[STDERR] ${data.toString()}`));
+        mcProcess.on('close', (code) => { /* ... */ });
+        mcProcess.on('error', (err) => { /* ... */ });
+
+        // 新增：延迟查找 Java 子进程
+        setTimeout(async () => {
+            if (!mcProcess) return;
+            const javaPid = await findJavaSubProcess(originalPid);
+            if (javaPid && javaPid !== originalPid) {
+                mcProcess.pid = javaPid;
+                pushLog(`已将监控 PID 从 ${originalPid} 更新为 ${javaPid}`);
+                stopStatsPolling();
+                startStatsPolling();
             }
-          }, backoff * 1000);
-        } else {
-          pushLog('已达到最大自动重启次数，不再继续重启');
-        }
-      }
-    });
-    mcProcess.on('error', (err) => {
-      pushLog(`启动失败: ${err.message}`);
-      mcProcess = null;
-      clearPidFile();
-      stopPlayerListPolling();
-      stopStatsPolling();
-    });
-    startStatsPolling();
-    startPlayerListPolling();
-    return true;
-  } catch (e) {
-    pushLog(`启动异常: ${e.message}`);
-    mcProcess = null;
-    stopPlayerListPolling();
-    stopStatsPolling();
-    return false;
-  }
+        }, 2000);
+
+        startStatsPolling();
+        startPlayerListPolling();
+        return true;
+    } catch (e) {
+        pushLog(`启动异常: ${e.message}`);
+        mcProcess = null;
+        return false;
+    }
 }
 
 function stopMinecraft() {

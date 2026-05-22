@@ -1017,7 +1017,7 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
             return result;
         } catch (error) {
             lastError = error;
-            logger.warn(`数据库查询失败 (尝试 ${i + 1}/${retries}): ${error.message}`);
+            logger.warn(`数据库查询失败 (尝试 ${i + 1}/${retries}): ${error.message}`, { sql, params });
             if (error.code === 'PROTOCOL_CONNECTION_LOST' || error.code === 'ECONNREFUSED' || error.fatal) {
                 const baseDelay = CONFIG.db.retryDelay;
                 const exponentialDelay = baseDelay * Math.pow(2, i);
@@ -1239,7 +1239,7 @@ async function loadKnownClientsFromDB() {
 
 async function saveKnownClientToDB(clientId, ip, port) {
     try {
-        const now = Date.now();
+        const now = Date.now(); // 毫秒时间戳，适配 BIGINT
         await executeWithRetry(
             `INSERT INTO known_clients (id, ip, port, last_seen, created_at) 
              VALUES (?, ?, ?, ?, ?) 
@@ -1250,7 +1250,7 @@ async function saveKnownClientToDB(clientId, ip, port) {
             [clientId, ip, port, now, now]
         );
     } catch (error) {
-        logger.warn('保存客户端到数据库失败', { error: error.message, clientId });
+        logger.warn('保存客户端到数据库失败', { error: error.message, clientId, sql: error.sql });
     }
 }
 
