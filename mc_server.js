@@ -265,13 +265,32 @@ class McServer {
   }
 
   updatePlayerInfoFromLine(line) {
+    const parsed = this.parsePlayerListLine(line);
+    if (parsed) {
+      this.playerInfo.count = parsed.count;
+      this.playerInfo.max = parsed.max;
+      this.playerInfo.players = parsed.players;
+      this.emit('mc_players', {
+        players: this.playerInfo.players,
+        count: this.playerInfo.count,
+        max: this.playerInfo.max
+      });
+      return;
+    }
+
+    // 原有的旧逻辑作为回退，兼容极少数特殊格式
     const countMatch = line.match(PLAYER_COUNT_REGEX);
     if (countMatch) {
       this.playerInfo.count = parseInt(countMatch[1], 10) || 0;
       this.playerInfo.max = parseInt(countMatch[2], 10) || 0;
-      this.emit('mc_players', { players: this.playerInfo.players, count: this.playerInfo.count, max: this.playerInfo.max });
+      this.emit('mc_players', {
+        players: this.playerInfo.players,
+        count: this.playerInfo.count,
+        max: this.playerInfo.max
+      });
       return;
     }
+
     if (line.trim().startsWith('[')) {
       const listMatch = line.match(PLAYER_LIST_REGEX);
       if (listMatch) {
@@ -282,7 +301,11 @@ class McServer {
           const players = raw.replace(/^\[|\]$/g, '').split(/,\s*/).map((name) => name.replace(/^"|"$/g, '').trim()).filter(Boolean);
           this.playerInfo.players = players;
         }
-        this.emit('mc_players', { players: this.playerInfo.players, count: this.playerInfo.players.length, max: this.playerInfo.max });
+        this.emit('mc_players', {
+          players: this.playerInfo.players,
+          count: this.playerInfo.players.length,
+          max: this.playerInfo.max
+        });
       }
     }
   }
