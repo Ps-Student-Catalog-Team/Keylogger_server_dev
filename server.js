@@ -433,28 +433,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 let mcManager;
 
-function getDefaultMcServerId() {
-    const list = mcManager.getAllServersInfo();
-    return list.length ? String(list[0].id) : null;
-}
-
-function rewriteLegacyMcRequests(req, res, next) {
-    // 以 mount 点为准计算相对路径，避免直接使用 req.url 导致重复前缀
-    const mount = req.baseUrl || '/api/mc';
-    let relativePath = (req.originalUrl || req.url || '').slice(mount.length) || '';
-    const parts = relativePath.split('/').filter(Boolean);
-    if (parts.length !== 1 || parts[0] === 'servers') {
-        return next();
-    }
-    const defaultId = getDefaultMcServerId();
-    if (!defaultId) {
-        return res.status(404).json({ success: false, error: '未配置 MC 服务器实例' });
-    }
-    // 将请求内部重写为带 ID 的路径，供后续挂载到 /api/mc/:id 的路由匹配使用
-    // 当中间件挂载在 /api/mc 时，设置 req.url 为 " /<id><relativePath>" 即可
-    req.url = `/${defaultId}${relativePath}`;
-    return next();
-}
 
 function ensureMcServer(req, res, next) {
     const { id } = req.params;
@@ -627,7 +605,6 @@ mcRouter.post('/backups/:name/restore', asyncHandler(async (req, res) => {
     }
 }));
 
-app.use('/api/mc', rewriteLegacyMcRequests);
 app.use('/api/mc/:id', mcRouter);
 
 // ========== Alist 客户端 ==========
@@ -1183,51 +1160,39 @@ async function initDatabase() {
 }
 
 async function ensureMcServersTable() {
-    await executeWithRetry(`
-        CREATE TABLE IF NOT EXISTS mc_servers (
-            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(100) NOT NULL UNIQUE,
-            display_name VARCHAR(100),
-            config JSON NOT NULL,
-            auto_start TINYINT(1) DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `, []);
-}
-
-async function migrateLegacyMcConfig() {
     try {
-        const rows = await executeWithRetry('SELECT COUNT(*) AS count FROM mc_servers', []);
-        if (rows.length && rows[0].count > 0) return;
-        const configFile = path.join(__dirname, 'mc_config.json');
-        if (!fs.existsSync(configFile)) return;
-        let fileContent = fs.readFileSync(configFile, 'utf8');
-        let legacyConfig = {};
-        try { legacyConfig = JSON.parse(fileContent); } catch (e) { legacyConfig = {}; }
-        const name = legacyConfig.name || 'default';
-        const displayName = legacyConfig.display_name || legacyConfig.name || 'default';
-        const config = Object.assign({}, legacyConfig, { name, display_name: displayName });
-        // 先检查是否已存在同名记录，避免 UNIQUE 冲突日志
-        try {
-            const existing = await executeWithRetry('SELECT id FROM mc_servers WHERE name = ?', [name]);
-            if (existing && existing.length > 0) {
-                logger.info('跳过迁移：mc_servers 表已存在同名实例', { name });
-            } else {
-                await executeWithRetry('INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)', [name, displayName, JSON.stringify(config), legacyConfig.autoRestart || legacyConfig.auto_start ? 1 : 0]);
-                logger.info('已迁移旧 MC 配置到 mc_servers 表');
-            }
-        } catch (e) {
-            if (e.code === 'ER_DUP_ENTRY') {
-                logger.info('迁移旧 MC 配置时检测到同名记录，已跳过插入', { name });
-            } else {
-                logger.warn('迁移旧 MC 配置时数据库操作失败', { error: e.message });
-            }
+        await executeWithRetry(`
+            CREATE TABLE IF NOT EXISTS mc_servers (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                display_name VARCHAR(100),
+                config JSON NOT NULL,
+                auto_start TINYINT(1) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `, []);
+    } catch (e) {
+        const msg = String(e.message || '').toLowerCase();
+        if (msg.includes('json') || msg.includes('unknown type') || msg.includes('syntax')) {
+            logger.warn('MySQL/MariaDB 不支持 JSON 字段类型，尝试使用 TEXT 备份兼容模式', { error: e.message });
+            await executeWithRetry(`
+                CREATE TABLE IF NOT EXISTS mc_servers (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL UNIQUE,
+                    display_name VARCHAR(100),
+                    config TEXT NOT NULL,
+                    auto_start TINYINT(1) DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            `, []);
+        } else {
+            throw e;
         }
-    } catch (error) {
-        logger.warn('迁移旧 MC 配置失败:', error.message);
     }
 }
+
 
 async function loadKnownClientsFromDB() {
     try {
@@ -3815,7 +3780,6 @@ async function shutdown() {
         await clientManager.init();
         try {
             await ensureMcServersTable();
-            await migrateLegacyMcConfig();
         } catch (e) {
             logger.warn('初始化 MC 服务器表失败:', { error: e.message });
         }

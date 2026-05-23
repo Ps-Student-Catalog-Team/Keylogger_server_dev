@@ -54,6 +54,11 @@ class McServer {
     this.saveAllWaiters = [];
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
+    try {
+      this.ensureLogDir();
+    } catch (e) {
+      console.warn(`无法创建 MC 日志目录 ${this.logDir}: ${e.message}`);
+    }
     this.configureAutoTasks();
     this.checkCompressionTools().catch(() => {});
   }

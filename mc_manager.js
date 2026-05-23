@@ -24,12 +24,50 @@ class McServerManager {
     try {
       const [rows] = await this.dbPool.execute('SELECT * FROM mc_servers');
       for (const row of rows) {
+        const rowId = row && row.id ? row.id : '(unknown)';
+        const rowName = row && row.name ? row.name : '';
         let cfg = {};
-        try { cfg = JSON.parse(row.config || '{}'); } catch (e) { cfg = {}; }
-        const srv = new McServer(row.id, cfg, this.baseDir, (event, serverId, payload) => this.emitEvent(serverId, event, payload));
+        if (typeof row.config === 'string') {
+          if (row.config.trim()) {
+            try {
+              cfg = JSON.parse(row.config);
+            } catch (e) {
+              console.warn(`mc_servers[${rowId}] config JSON 解析失败，已使用默认配置: ${e.message}`);
+              cfg = {};
+            }
+          }
+        } else if (Buffer.isBuffer(row.config)) {
+          try {
+            const text = row.config.toString('utf8');
+            cfg = text.trim() ? JSON.parse(text) : {};
+          } catch (e) {
+            console.warn(`mc_servers[${rowId}] config Buffer 解析失败，已使用默认配置: ${e.message}`);
+            cfg = {};
+          }
+        } else if (typeof row.config === 'object' && row.config !== null) {
+          cfg = row.config;
+        }
+        if (typeof cfg !== 'object' || cfg === null) cfg = {};
+        if (!cfg.name) cfg.name = rowName || String(rowId);
+        if (!cfg.display_name) cfg.display_name = row.display_name || cfg.name;
+
+        let srv;
+        try {
+          srv = new McServer(row.id, cfg, this.baseDir, (event, serverId, payload) => this.emitEvent(serverId, event, payload));
+        } catch (e) {
+          console.warn(`mc_servers[${rowId}] 实例创建失败，已跳过该记录: ${e.message}`);
+          continue;
+        }
+
         this.servers.set(String(row.id), srv);
         if (row.auto_start) {
-          setImmediate(() => srv.start(false));
+          setImmediate(async () => {
+            try {
+              await srv.start(false);
+            } catch (e) {
+              console.warn(`mc_servers[${rowId}] 自动启动失败: ${e.message}`);
+            }
+          });
         }
       }
     } catch (e) {
