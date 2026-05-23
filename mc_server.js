@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const iconv = require('iconv-lite');
+const jschardet = require('jschardet');
 
 const LOG_MAX_LINES = 2000;
 const PLAYER_COUNT_REGEX = /There are\s+(\d+)\s+of\s+a\s+max\s+of\s+(\d+)\s+players\s+online/i;
@@ -31,7 +33,8 @@ class McServer {
       autoRestart: false,
       autoRestartDelaySeconds: 5,
       autoRestartMaxRetries: 3,
-      playerListIntervalSeconds: 0
+      playerListIntervalSeconds: 0,
+      tpsIntervalSeconds: 1
     }, config || {});
 
     this.logs = [];
@@ -44,6 +47,7 @@ class McServer {
     this.restartAttempts = 0;
     this.playerListTimer = null;
     this.statsTimer = null;
+    this.tpsTimer = null;
     this.lastCpuTime = null;
     this.lastCpuTimestamp = null;
     this.lastCpuPid = null;
@@ -79,6 +83,7 @@ class McServer {
     newConfig.autoRestartDelaySeconds = Number(newConfig.autoRestartDelaySeconds) || 0;
     newConfig.autoRestartMaxRetries = Number(newConfig.autoRestartMaxRetries) || 0;
     newConfig.playerListIntervalSeconds = Number(newConfig.playerListIntervalSeconds) || 0;
+    newConfig.tpsIntervalSeconds = Number(newConfig.tpsIntervalSeconds) || 0;
     newConfig.backupRetentionCount = Number(newConfig.backupRetentionCount) || 0;
     newConfig.backupRetentionDays = Number(newConfig.backupRetentionDays) || 0;
 
@@ -90,13 +95,21 @@ class McServer {
     if (config.display_name !== undefined) newConfig.display_name = config.display_name;
     if (config.backupDir !== undefined) newConfig.backupDir = config.backupDir;
 
-    const oldInterval = Number(this.config.playerListIntervalSeconds) || 0;
+    const oldPlayerListInterval = Number(this.config.playerListIntervalSeconds) || 0;
+    const oldTpsInterval = Number(this.config.tpsIntervalSeconds) || 0;
     this.config = newConfig;
     this.configureAutoTasks();
-    const newInterval = Number(this.config.playerListIntervalSeconds) || 0;
-    if (oldInterval !== newInterval && this.process && !this.process.recovered) {
-      this.stopPlayerListPolling();
-      this.startPlayerListPolling();
+    const newPlayerListInterval = Number(this.config.playerListIntervalSeconds) || 0;
+    const newTpsInterval = Number(this.config.tpsIntervalSeconds) || 0;
+    if (this.process && !this.process.recovered) {
+      if (oldPlayerListInterval !== newPlayerListInterval) {
+        this.stopPlayerListPolling();
+        this.startPlayerListPolling();
+      }
+      if (oldTpsInterval !== newTpsInterval) {
+        this.stopTpsPolling();
+        this.startTpsPolling();
+      }
     }
     return this.config;
   }
@@ -185,7 +198,7 @@ class McServer {
     if (!intervalSeconds || !this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return;
     this.playerListTimer = setInterval(() => {
       if (this.process && !this.process.recovered && this.process.stdin && !this.process.stdin.destroyed) {
-        this.sendCommand('list');
+        this.sendCommand('list', true);   // 自动轮询不记录日志
       }
     }, intervalSeconds * 1000);
   }
@@ -194,6 +207,24 @@ class McServer {
     if (this.playerListTimer) {
       clearInterval(this.playerListTimer);
       this.playerListTimer = null;
+    }
+  }
+
+  startTpsPolling() {
+    this.stopTpsPolling();
+    const intervalSeconds = Number(this.config.tpsIntervalSeconds) || 0;
+    if (!intervalSeconds || !this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return;
+    this.tpsTimer = setInterval(() => {
+      if (this.process && !this.process.recovered && this.process.stdin && !this.process.stdin.destroyed) {
+        this.sendCommand('tps', true);
+      }
+    }, intervalSeconds * 1000);
+  }
+
+  stopTpsPolling() {
+    if (this.tpsTimer) {
+      clearInterval(this.tpsTimer);
+      this.tpsTimer = null;
     }
   }
 
@@ -378,22 +409,66 @@ class McServer {
     this.ensureDir(this.logDir);
   }
 
-  pushLog(line) {
-    const normalized = String(line || '').replace(/\r?\n$/, '');
-    if (!normalized) return;
-    const formatted = `${new Date().toISOString()} ${normalized}`;
-    this.logs.push(formatted);
-    while (this.logs.length > LOG_MAX_LINES) this.logs.shift();
-    this.ensureLogDir();
-    fs.promises.appendFile(this.logFile, formatted + os.EOL).catch(() => {});
+  decodeProcessOutput(data) {
+    if (typeof data === 'string') return data;
+    if (!Buffer.isBuffer(data)) return String(data || '');
 
-    const level = this.classifyLogLevel(normalized);
-    this.updatePlayerInfoFromLine(normalized);
-    this.updateTpsFromLine(normalized);
-    if (this.saveAllWaiters.length && /Saved (?:the game|world|server state)/i.test(normalized)) {
-      this.saveAllWaiters.splice(0, this.saveAllWaiters.length).forEach((resolve) => resolve(true));
+    const utf8 = data.toString('utf8');
+    if (!utf8.includes('�')) return utf8;
+
+    const detection = jschardet.detect(data);
+    const encoding = detection && detection.encoding ? String(detection.encoding).toLowerCase() : null;
+    if (encoding && encoding !== 'ascii') {
+      try {
+        if (encoding.includes('gb') || encoding.includes('cp936')) {
+          return iconv.decode(data, 'gb18030');
+        }
+        return iconv.decode(data, encoding);
+      } catch (e) {
+        // fall through to fallback below
+      }
     }
-    this.emit('mc_log', { line: normalized, level });
+
+    try {
+      return iconv.decode(data, 'gb18030');
+    } catch (e) {
+      return utf8;
+    }
+  }
+
+  pushLog(line) {
+    const raw = String(line || '');
+    const normalized = raw.replace(/\r?\n$/, '');
+    if (!normalized) return;
+
+    // 过滤掉自动轮询产生的 TPS 输出（避免控制台刷屏）
+    // 去除 ANSI 码后再判断是否包含 "TPS from last"
+    const cleanForFilter = normalized.replace(/\u001b\[[0-9;]*m/g, '');
+    if (cleanForFilter.includes('TPS from last')) {
+        // 如果是自动轮询的 TPS 行，不记录到日志，也不显示
+        // 但仍然更新内部的 TPS 数值（需要调用 updateTpsFromLine 以更新数据）
+        this.updateTpsFromLine(normalized);
+        return;
+    }
+
+    const parts = normalized.split(/\r?\n/);
+    parts.forEach((part) => {
+        const trimmed = String(part || '').trim();
+        if (!trimmed) return;
+        const formatted = `${new Date().toISOString()} ${trimmed}`;
+        this.logs.push(formatted);
+        while (this.logs.length > LOG_MAX_LINES) this.logs.shift();
+        this.ensureLogDir();
+        fs.promises.appendFile(this.logFile, formatted + os.EOL).catch(() => {});
+
+        const level = this.classifyLogLevel(trimmed);
+        this.updatePlayerInfoFromLine(trimmed);
+        this.updateTpsFromLine(trimmed);  // 解析 TPS 数值
+        if (this.saveAllWaiters.length && /Saved (?:the game|world|server state)/i.test(trimmed)) {
+            this.saveAllWaiters.splice(0, this.saveAllWaiters.length).forEach((resolve) => resolve(true));
+        }
+        this.emit('mc_log', { line: trimmed, level });
+    });
   }
 
   getLogs(limit = 200) {
@@ -455,13 +530,36 @@ class McServer {
   }
 
   updateTpsFromLine(line) {
-    const tpsMatch = line.match(TPS_REGEX);
-    if (tpsMatch) {
-      const tps = parseFloat(tpsMatch[1]);
-      if (!Number.isNaN(tps)) {
+    console.log('[DEBUG] updateTpsFromLine 被调用，原始行:', line);
+    
+    // 去除 ANSI 转义码（使用更通用的正则）
+    const cleanLine = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+    console.log('[DEBUG] 清理后:', cleanLine);
+    
+    // 匹配 TPS
+    const patterns = [
+        /TPS from last 1m, 5m, 15m:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/i,
+        /TPS from last 1m:\s*([\d.]+)/i,
+        /TPS:\s*([\d.]+)/i,
+        /TPS\s+from\s+last\s+.*?:\s*([\d.]+)/i
+    ];
+    
+    let tps = null;
+    for (const pattern of patterns) {
+        const match = cleanLine.match(pattern);
+        if (match) {
+            tps = parseFloat(match[1]);
+            console.log('[DEBUG] 匹配到的 TPS:', tps);
+            if (!isNaN(tps)) break;
+        }
+    }
+    
+    if (tps !== null && !isNaN(tps)) {
         this.latestTps = tps;
         this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: tps });
-      }
+        console.log('[TPS] 成功更新 TPS =', tps);
+    } else {
+        console.log('[DEBUG] 未匹配到 TPS');
     }
   }
 
@@ -658,10 +756,10 @@ class McServer {
         this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
 
         if (this.process.stdout) {
-            this.process.stdout.on('data', (data) => this.pushLog(data.toString()));
+            this.process.stdout.on('data', (data) => this.pushLog(this.decodeProcessOutput(data)));
         }
         if (this.process.stderr) {
-            this.process.stderr.on('data', (data) => this.pushLog('[STDERR] ' + data.toString()));
+            this.process.stderr.on('data', (data) => this.pushLog('[STDERR] ' + this.decodeProcessOutput(data)));
         }
 
         this.process.on('close', (code) => {
@@ -669,6 +767,7 @@ class McServer {
             this.process = null;
             this.stopPlayerListPolling();
             this.stopStatsPolling();
+            this.stopTpsPolling();
             this.clearRestartResetTimer();
             if (!this.manualStopRequested && this.config.autoRestart) {
                 this.scheduleAutoRestart();
@@ -682,6 +781,7 @@ class McServer {
 
         this.startPlayerListPolling();
         this.startStatsPolling();
+        this.startTpsPolling();
         this.resetRestartAttemptsAfterStableRun();
         return true;
     } catch (e) {
@@ -699,6 +799,7 @@ class McServer {
       this.manualStopRequested = true;
       this.stopPlayerListPolling();
       this.stopStatsPolling();
+      this.stopTpsPolling();
       this.stopAutoRestart();
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write('stop\n');
@@ -717,6 +818,7 @@ class McServer {
       this.manualStopRequested = true;
       this.stopPlayerListPolling();
       this.stopStatsPolling();
+      this.stopTpsPolling();
       this.stopAutoRestart();
       const pid = this.process.pid;
       if (!pid) return false;
@@ -738,7 +840,7 @@ class McServer {
     }
   }
 
-  sendCommand(cmd) {
+  sendCommand(cmd, skipLog = false) {
     if (!cmd || !this.process) return false;
     if (this.process.recovered) {
       this.pushLog(`命令发送失败：进程处于恢复只读模式，无法发送命令: ${cmd}`);
@@ -747,7 +849,9 @@ class McServer {
     try {
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write(cmd + '\n');
-        this.pushLog('> ' + cmd);
+        if (!skipLog) {
+          this.pushLog('> ' + cmd);
+        }
         return true;
       }
       this.pushLog(`命令发送失败：stdin 未就绪，无法发送命令: ${cmd}`);
@@ -859,8 +963,8 @@ class McServer {
       const child = spawn(command, args, { windowsHide: true, ...options });
       let stdout = '';
       let stderr = '';
-      child.stdout.on('data', (data) => { stdout += data.toString(); });
-      child.stderr.on('data', (data) => { stderr += data.toString(); });
+      child.stdout.on('data', (data) => { stdout += this.decodeProcessOutput(data); });
+      child.stderr.on('data', (data) => { stderr += this.decodeProcessOutput(data); });
       child.on('close', (code) => {
         // 即使退出码非0，只要有 stdout 输出就视为成功
         if (stdout.trim()) {
