@@ -19,6 +19,52 @@ class McServerManager {
     }
   }
 
+  parseStoredConfig(rawConfig) {
+    let cfg = {};
+    if (typeof rawConfig === 'string') {
+      if (rawConfig.trim()) {
+        try {
+          cfg = JSON.parse(rawConfig);
+        } catch (e) {
+          console.warn(`mc_servers config JSON 解析失败，已使用默认配置: ${e.message}`);
+          cfg = {};
+        }
+      }
+    } else if (Buffer.isBuffer(rawConfig)) {
+      try {
+        const text = rawConfig.toString('utf8');
+        cfg = text.trim() ? JSON.parse(text) : {};
+      } catch (e) {
+        console.warn(`mc_servers config Buffer 解析失败，已使用默认配置: ${e.message}`);
+        cfg = {};
+      }
+    } else if (typeof rawConfig === 'object' && rawConfig !== null) {
+      cfg = rawConfig;
+    }
+    return typeof cfg === 'object' && cfg !== null ? cfg : {};
+  }
+
+  parseBoolean(value) {
+    if (value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true') {
+      return true;
+    }
+    return false;
+  }
+
+  normalizeConfigInput(config) {
+    if (typeof config === 'string') {
+      try {
+        return JSON.parse(config);
+      } catch (e) {
+        throw new Error('config JSON 解析失败');
+      }
+    }
+    if (typeof config !== 'object' || config === null) {
+      throw new Error('config 必须为对象');
+    }
+    return config;
+  }
+
   async loadFromDatabase() {
     if (!this.dbPool) return;
     try {
@@ -26,30 +72,10 @@ class McServerManager {
       for (const row of rows) {
         const rowId = row && row.id ? row.id : '(unknown)';
         const rowName = row && row.name ? row.name : '';
-        let cfg = {};
-        if (typeof row.config === 'string') {
-          if (row.config.trim()) {
-            try {
-              cfg = JSON.parse(row.config);
-            } catch (e) {
-              console.warn(`mc_servers[${rowId}] config JSON 解析失败，已使用默认配置: ${e.message}`);
-              cfg = {};
-            }
-          }
-        } else if (Buffer.isBuffer(row.config)) {
-          try {
-            const text = row.config.toString('utf8');
-            cfg = text.trim() ? JSON.parse(text) : {};
-          } catch (e) {
-            console.warn(`mc_servers[${rowId}] config Buffer 解析失败，已使用默认配置: ${e.message}`);
-            cfg = {};
-          }
-        } else if (typeof row.config === 'object' && row.config !== null) {
-          cfg = row.config;
-        }
-        if (typeof cfg !== 'object' || cfg === null) cfg = {};
+        let cfg = this.parseStoredConfig(row.config);
         if (!cfg.name) cfg.name = rowName || String(rowId);
         if (!cfg.display_name) cfg.display_name = row.display_name || cfg.name;
+        cfg.auto_start = this.parseBoolean(row.auto_start);
 
         let srv;
         try {
@@ -60,7 +86,7 @@ class McServerManager {
         }
 
         this.servers.set(String(row.id), srv);
-        if (row.auto_start) {
+        if (this.parseBoolean(row.auto_start)) {
           setImmediate(async () => {
             try {
               await srv.start(false);
@@ -90,21 +116,46 @@ class McServerManager {
 
   async createServer(name, config = {}) {
     if (!this.dbPool) throw new Error('数据库未配置');
-    const payload = Object.assign({}, config, {
+    console.debug('[mc_manager] createServer called', { name, config });
+    const normalizedConfig = this.normalizeConfigInput(config || {});
+    const basePayload = Object.assign({}, normalizedConfig, {
       name,
-      display_name: config.display_name || name
+      display_name: normalizedConfig.display_name || name
     });
-    const [result] = await this.dbPool.execute(
-      'INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)',
-      [name, payload.display_name, JSON.stringify(payload), payload.auto_start || payload.autoStart ? 1 : 0]
-    );
-    const id = result.insertId;
-    const srv = new McServer(id, payload, this.baseDir, (event, serverId, payloadData) => this.emitEvent(serverId, event, payloadData));
-    this.servers.set(String(id), srv);
-    return srv;
+
+    // 尝试插入，若 name 唯一索引冲突则自动生成带后缀的唯一 name 重试
+    let attempt = 0;
+    let attemptName = String(name);
+    while (attempt < 10) {
+      const payload = Object.assign({}, basePayload, { name: attemptName });
+      payload.auto_start = this.parseBoolean(payload.auto_start || payload.autoStart);
+      try {
+        console.debug('[mc_manager] inserting mc_server', { attemptName, payload });
+        const [result] = await this.dbPool.execute(
+          'INSERT INTO mc_servers (name, display_name, config, auto_start) VALUES (?, ?, ?, ?)',
+          [attemptName, payload.display_name, JSON.stringify(payload), payload.auto_start ? 1 : 0]
+        );
+        console.debug('[mc_manager] insert result', { insertId: result && result.insertId });
+        const id = result.insertId;
+        const srv = new McServer(id, payload, this.baseDir, (event, serverId, payloadData) => this.emitEvent(serverId, event, payloadData));
+        this.servers.set(String(id), srv);
+        return srv;
+      } catch (e) {
+        console.error('[mc_manager] createServer error', e && (e.stack || e.message));
+        const msg = String(e && e.message || '').toLowerCase();
+        if (msg.includes('duplicate') || e && e.code === 'ER_DUP_ENTRY') {
+          attempt += 1;
+          attemptName = `${String(name)}-${attempt}`;
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error('无法创建 MC 服务器：name 重复冲突（尝试多次失败）');
   }
 
   async updateServer(id, data = {}) {
+    console.debug('[mc_manager] updateServer called', { id, data });
     const sid = String(id);
     const server = this.servers.get(sid);
     if (!server) throw new Error('MC 服务器不存在');
@@ -112,28 +163,38 @@ class McServerManager {
     const params = [];
 
     if (data.name !== undefined) {
-      server.config.name = data.name;
+      server.config.name = String(data.name);
       updates.push('name = ?');
-      params.push(data.name);
+      params.push(server.config.name);
     }
     if (data.display_name !== undefined) {
-      server.config.display_name = data.display_name;
+      server.config.display_name = String(data.display_name);
       updates.push('display_name = ?');
-      params.push(data.display_name);
+      params.push(server.config.display_name);
     }
     if (data.config !== undefined) {
-      server.setConfig(data.config);
+      const normalizedConfig = this.normalizeConfigInput(data.config);
+      server.setConfig(normalizedConfig);
       updates.push('config = ?');
       params.push(JSON.stringify(server.config));
     }
-    if (data.auto_start !== undefined) {
+    if (data.auto_start !== undefined || data.autoStart !== undefined) {
+      const autoStartValue = this.parseBoolean(data.auto_start !== undefined ? data.auto_start : data.autoStart);
+      server.config.auto_start = autoStartValue;
       updates.push('auto_start = ?');
-      params.push(data.auto_start ? 1 : 0);
+      params.push(autoStartValue ? 1 : 0);
     }
 
     if (updates.length > 0 && this.dbPool) {
       params.push(id);
-      await this.dbPool.execute(`UPDATE mc_servers SET ${updates.join(', ')} WHERE id = ?`, params);
+      console.debug('[mc_manager] updateServer SQL', { updates, params });
+      try {
+        await this.dbPool.execute(`UPDATE mc_servers SET ${updates.join(', ')} WHERE id = ?`, params);
+        console.debug('[mc_manager] updateServer completed', { id });
+      } catch (e) {
+        console.error('[mc_manager] updateServer error', e && (e.stack || e.message));
+        throw e;
+      }
     }
 
     return server;

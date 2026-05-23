@@ -652,6 +652,7 @@ class McServer {
         }
         const program = launchArgs[0];
         const args = launchArgs.slice(1);
+        console.error('[DEBUG] spawn 参数:', { program, args, cwd }); 
         this.process = spawn(program, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         const actualPid = this.process.pid;
         this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
@@ -684,11 +685,12 @@ class McServer {
         this.resetRestartAttemptsAfterStableRun();
         return true;
     } catch (e) {
-        this.pushLog(`启动异常: ${e.message}`);
-        this.process = null;
-        this.clearRestartResetTimer();
-        return false;
-    }
+      this.pushLog(`启动异常: ${e.message}`);
+      console.error('[mc_server] 启动失败详情:', e);
+      this.process = null;
+      this.clearRestartResetTimer();
+      return false;
+  }
   }
 
   stop() {

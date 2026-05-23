@@ -116,6 +116,21 @@ function parseCookies(cookieHeader = '') {
     }, {});
 }
 
+function isHttpsEnabled() {
+    return process.env.HTTPS_ENABLED === 'true' || process.env.HTTPS_ENABLED === '1';
+}
+
+function getAuthCookieOptions() {
+    const secure = isHttpsEnabled();
+    return {
+        path: '/',
+        httpOnly: true,
+        secure,
+        sameSite: secure ? 'None' : 'Lax',
+        maxAge: AUTH_CONFIG.maxAge
+    };
+}
+
 function createAuthToken() {
     const expires = Date.now() + AUTH_CONFIG.maxAge;
     const payload = `${expires}`;
@@ -190,7 +205,7 @@ async function appendEncryptedFile(filePath, block) {
     });
 }
 
-const WS_MESSAGE_TTL = 10 * 1000;
+const WS_MESSAGE_TTL = 60 * 1000;
 function createWsMessageToken() {
     const expires = Date.now() + WS_MESSAGE_TTL;
     const payload = `${expires}`;
@@ -393,13 +408,7 @@ app.post('/api/login', loginLimiter, asyncHandler(async (req, res) => {
     
     if (password === AUTH_CONFIG.password) {
         const token = createAuthToken();
-        const secure = process.env.HTTPS_ENABLED === 'true';
-        res.cookie(AUTH_CONFIG.cookieName, token, {
-            path: '/',
-            httpOnly: true,
-            sameSite: 'Strict',
-            secure
-        });
+        res.cookie(AUTH_CONFIG.cookieName, token, getAuthCookieOptions());
         auditLogger.info('用户登录成功', { user: 'admin', action: 'login', ip: clientIP });
         return res.json({ success: true });
     }
@@ -409,13 +418,7 @@ app.post('/api/login', loginLimiter, asyncHandler(async (req, res) => {
 }));
 
 app.get('/logout', (req, res) => {
-    const secure = process.env.HTTPS_ENABLED === 'true';
-    res.clearCookie(AUTH_CONFIG.cookieName, {
-        path: '/',
-        httpOnly: true,
-        sameSite: 'Strict',
-        secure
-    });
+    res.clearCookie(AUTH_CONFIG.cookieName, getAuthCookieOptions());
     res.redirect('/login');
 });
 
@@ -457,20 +460,24 @@ app.get('/api/mc/servers/:id', asyncHandler(async (req, res) => {
 
 app.post('/api/mc/servers', asyncHandler(async (req, res) => {
     const { name, config } = req.body || {};
+    logger.debug('POST /api/mc/servers', { body: req.body, ip: req.ip });
     if (!name) return res.status(400).json({ success: false, error: 'name 不能为空' });
     try {
         const srv = await mcManager.createServer(name, config || {});
         res.json({ success: true, id: srv.id });
     } catch (e) {
+        logger.error('POST /api/mc/servers error', { message: e.message, stack: e.stack, body: req.body });
         res.status(500).json({ success: false, error: e.message });
     }
 }));
 
 app.put('/api/mc/servers/:id', asyncHandler(async (req, res) => {
+    logger.debug('PUT /api/mc/servers/:id', { id: req.params.id, body: req.body, ip: req.ip });
     try {
         const server = await mcManager.updateServer(req.params.id, req.body || {});
         res.json({ success: true, server: { id: server.id, name: server.config.name, display_name: server.config.display_name, config: server.config, status: server.getStatus() } });
     } catch (e) {
+        logger.error('PUT /api/mc/servers/:id error', { id: req.params.id, message: e.message, stack: e.stack, body: req.body });
         const statusCode = e.message === 'autoBackupCron 格式无效' ? 400 : 500;
         res.status(statusCode).json({ success: false, error: e.message });
     }
@@ -495,11 +502,13 @@ mcRouter.get('/config', asyncHandler(async (req, res) => {
 
 mcRouter.post('/config', asyncHandler(async (req, res) => {
     const config = req.body || {};
+    logger.debug('POST /api/mc/servers/:id/config', { id: req.params.id, body: config, ip: req.ip });
     try {
         req.mcServer.setConfig(config);
         await mcManager.updateServer(req.params.id, { config: req.mcServer.config });
         res.json({ success: true, message: '配置已保存' });
     } catch (e) {
+        logger.error('POST /api/mc/servers/:id/config error', { id: req.params.id, message: e.message, stack: e.stack, body: config });
         const statusCode = e.message === 'autoBackupCron 格式无效' ? 400 : 500;
         res.status(statusCode).json({ success: false, error: e.message });
     }
@@ -1006,12 +1015,14 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
     for (let i = 0; i < retries; i++) {
         let connection;
         try {
+            logger.debug('DB executeWithRetry start', { sql, params, attempt: i + 1 });
             connection = await pool.getConnection();
             const [result] = await connection.execute(sql, params);
             return result;
         } catch (error) {
             lastError = error;
             logger.warn(`数据库查询失败 (尝试 ${i + 1}/${retries}): ${error.message}`, { sql, params });
+            logger.error('DB executeWithRetry stack', { stack: error.stack });
             if (error.code === 'PROTOCOL_CONNECTION_LOST' || error.code === 'ECONNREFUSED' || error.fatal) {
                 const baseDelay = CONFIG.db.retryDelay;
                 const exponentialDelay = baseDelay * Math.pow(2, i);
