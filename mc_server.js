@@ -50,6 +50,8 @@ class McServer {
     this.autoBackupTimer = null;
     this.lastAutoBackupKey = null;
     this.backupInProgress = false;
+    this.restartResetTimer = null;
+    this.saveAllWaiters = [];
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
     this.configureAutoTasks();
@@ -66,17 +68,41 @@ class McServer {
   }
 
   setConfig(config = {}) {
-    this.config = Object.assign({}, this.config, config);
-    if (config.name) this.config.name = config.name;
-    if (config.display_name) this.config.display_name = config.display_name;
-    if (config.backupDir !== undefined) this.config.backupDir = config.backupDir;
+    const newConfig = Object.assign({}, this.config, config);
+    newConfig.autoBackupEnabled = newConfig.autoBackupEnabled === true || String(newConfig.autoBackupEnabled) === 'true' || String(newConfig.autoBackupEnabled) === '1';
+    newConfig.autoRestart = newConfig.autoRestart === true || String(newConfig.autoRestart) === 'true' || String(newConfig.autoRestart) === '1';
+    newConfig.autoRestartDelaySeconds = Number(newConfig.autoRestartDelaySeconds) || 0;
+    newConfig.autoRestartMaxRetries = Number(newConfig.autoRestartMaxRetries) || 0;
+    newConfig.playerListIntervalSeconds = Number(newConfig.playerListIntervalSeconds) || 0;
+    newConfig.backupRetentionCount = Number(newConfig.backupRetentionCount) || 0;
+    newConfig.backupRetentionDays = Number(newConfig.backupRetentionDays) || 0;
+
+    if (newConfig.autoBackupEnabled && String(newConfig.autoBackupCron || '').trim() && !this.isCronExpressionValid(String(newConfig.autoBackupCron))) {
+      throw new Error('autoBackupCron 格式无效');
+    }
+
+    if (config.name !== undefined) newConfig.name = config.name;
+    if (config.display_name !== undefined) newConfig.display_name = config.display_name;
+    if (config.backupDir !== undefined) newConfig.backupDir = config.backupDir;
+
+    const oldInterval = Number(this.config.playerListIntervalSeconds) || 0;
+    this.config = newConfig;
     this.configureAutoTasks();
+    const newInterval = Number(this.config.playerListIntervalSeconds) || 0;
+    if (oldInterval !== newInterval && this.process && !this.process.recovered) {
+      this.stopPlayerListPolling();
+      this.startPlayerListPolling();
+    }
     return this.config;
   }
 
   configureAutoTasks() {
     this.stopAutoBackup();
     if (!this.config.autoBackupEnabled || !String(this.config.autoBackupCron || '').trim()) {
+      return;
+    }
+    if (!this.isCronExpressionValid(String(this.config.autoBackupCron))) {
+      this.pushLog(`自动备份 Cron 表达式无效：${String(this.config.autoBackupCron)}`);
       return;
     }
     this.autoBackupTimer = setInterval(async () => {
@@ -151,9 +177,9 @@ class McServer {
   startPlayerListPolling() {
     this.stopPlayerListPolling();
     const intervalSeconds = Number(this.config.playerListIntervalSeconds) || 0;
-    if (!intervalSeconds || !this.process || !this.process.stdin || this.process.stdin.destroyed) return;
+    if (!intervalSeconds || !this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return;
     this.playerListTimer = setInterval(() => {
-      if (this.process && this.process.stdin && !this.process.stdin.destroyed) {
+      if (this.process && !this.process.recovered && this.process.stdin && !this.process.stdin.destroyed) {
         this.sendCommand('list');
       }
     }, intervalSeconds * 1000);
@@ -220,6 +246,116 @@ class McServer {
     return `${javaPath} -Xms${minMemory} -Xmx${maxMemory} -jar ${jarPath} nogui ${args}`.trim();
   }
 
+  getLaunchArgs() {
+    const cmd = String(this.config.fullCommand || '').trim();
+    if (cmd) {
+      return this.ensureJlineTerminalArg(this.parseCommandString(cmd));
+    }
+    const javaPath = String(this.config.javaPath || 'java').trim();
+    const jarPath = String(this.config.jarPath || 'server.jar').trim();
+    const minMemory = String(this.config.minMemory || '1024M').trim();
+    const maxMemory = String(this.config.maxMemory || '4096M').trim();
+    const args = String(this.config.additionalArgs || '').trim();
+    const result = [javaPath, `-Xms${minMemory}`, `-Xmx${maxMemory}`, '-jar', jarPath, 'nogui'];
+    if (args) {
+      result.push(...this.parseCommandString(args));
+    }
+    return this.ensureJlineTerminalArg(result);
+  }
+
+  ensureJlineTerminalArg(args) {
+    const normalizedArgs = Array.isArray(args) ? args.slice() : [];
+    if (normalizedArgs.some((arg) => String(arg).includes('-Djline.terminal='))) {
+      return normalizedArgs;
+    }
+    const jarIndex = normalizedArgs.findIndex((arg) => arg === '-jar');
+    const javaIndex = normalizedArgs.findIndex((arg) => {
+      if (!arg || typeof arg !== 'string') return false;
+      return /(^|[\\/])java(?:\.exe)?$/i.test(arg) || arg.toLowerCase() === 'java';
+    });
+    const insertAt = jarIndex > 0 ? jarIndex : (javaIndex >= 0 ? javaIndex + 1 : 1);
+    normalizedArgs.splice(insertAt, 0, '-Djline.terminal=jline.UnsupportedTerminal');
+    return normalizedArgs;
+  }
+
+  parseCommandString(command) {
+    const args = [];
+    let current = '';
+    let quote = null;
+    for (let i = 0; i < command.length; i += 1) {
+      const ch = command[i];
+      if (quote) {
+        if (ch === quote) {
+          quote = null;
+          continue;
+        }
+        current += ch;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        continue;
+      }
+      if (/\s/.test(ch)) {
+        if (current) {
+          args.push(current);
+          current = '';
+        }
+        continue;
+      }
+      current += ch;
+    }
+    if (current) args.push(current);
+    return args;
+  }
+
+  isCronExpressionValid(expression) {
+    const parts = String(expression || '').trim().split(/\s+/);
+    if (parts.length !== 5) return false;
+    return [
+      this.parseCronField(parts[0], new Date().getMinutes(), 0, 59),
+      this.parseCronField(parts[1], new Date().getHours(), 0, 23),
+      this.parseCronField(parts[2], new Date().getDate(), 1, 31),
+      this.parseCronField(parts[3], new Date().getMonth() + 1, 1, 12),
+      this.parseCronField(parts[4], new Date().getDay(), 0, 6)
+    ].every(Boolean);
+  }
+
+  resetRestartAttemptsAfterStableRun() {
+    if (this.restartResetTimer) {
+      clearTimeout(this.restartResetTimer);
+      this.restartResetTimer = null;
+    }
+    if (this.restartAttempts <= 0) return;
+    this.restartResetTimer = setTimeout(() => {
+      this.restartAttempts = 0;
+      this.restartResetTimer = null;
+      this.pushLog('自动重启计数器已重置');
+    }, 10 * 60 * 1000);
+  }
+
+  clearRestartResetTimer() {
+    if (this.restartResetTimer) {
+      clearTimeout(this.restartResetTimer);
+      this.restartResetTimer = null;
+    }
+  }
+
+  waitForSaveAllConfirmation(timeoutMs = 15000) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const index = this.saveAllWaiters.indexOf(resolve);
+        if (index !== -1) this.saveAllWaiters.splice(index, 1);
+        resolve(false);
+      }, timeoutMs);
+      const wrappedResolve = (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      };
+      this.saveAllWaiters.push(wrappedResolve);
+    });
+  }
+
   resolveWorkingDir() {
     return path.isAbsolute(this.config.workingDir || '') ? this.config.workingDir : path.join(this.baseDir, String(this.config.workingDir || ''));
   }
@@ -249,6 +385,9 @@ class McServer {
     const level = this.classifyLogLevel(normalized);
     this.updatePlayerInfoFromLine(normalized);
     this.updateTpsFromLine(normalized);
+    if (this.saveAllWaiters.length && /Saved (?:the game|world|server state)/i.test(normalized)) {
+      this.saveAllWaiters.splice(0, this.saveAllWaiters.length).forEach((resolve) => resolve(true));
+    }
     this.emit('mc_log', { line: normalized, level });
   }
 
@@ -376,17 +515,29 @@ class McServer {
     }
   }
 
+  parseCpuTime(timeString) {
+    const parts = String(timeString || '').trim().split(':').map((v) => parseInt(v, 10));
+    if (parts.some((n) => Number.isNaN(n))) return 0;
+    if (parts.length === 3) {
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    if (parts.length === 2) {
+      return parts[0] * 60 + parts[1];
+    }
+    return parts[0] || 0;
+  }
+
   getUnixProcessStats(pid) {
     return new Promise((resolve) => {
       const stats = [];
       const gather = (processId, callback) => {
-        const proc = spawn('ps', ['-p', String(processId), '-o', '%cpu=', '-o', 'rss='], { windowsHide: true });
+        const proc = spawn('ps', ['-p', String(processId), '-o', 'cputime=', '-o', 'rss='], { windowsHide: true });
         let output = '';
         proc.stdout.on('data', (data) => { output += data.toString(); });
         proc.on('close', () => {
           const parts = output.trim().split(/\s+/);
           if (parts.length >= 2) {
-            stats.push({ cpu: parseFloat(parts[0] || '0'), rss: parseInt(parts[1] || '0', 10) * 1024 });
+            stats.push({ cpu: this.parseCpuTime(parts[0] || '0'), rss: parseInt(parts[1] || '0', 10) * 1024 });
           }
           callback();
         });
@@ -415,7 +566,20 @@ class McServer {
         gatherChildren(pid, () => {
           const totalCpu = stats.reduce((sum, item) => sum + (Number.isFinite(item.cpu) ? item.cpu : 0), 0);
           const totalUsed = stats.reduce((sum, item) => sum + (Number.isFinite(item.rss) ? item.rss : 0), 0);
-          resolve({ cpu: totalCpu, memory: { used: totalUsed, total: os.totalmem() } });
+          const now = Date.now();
+          let cpuPercent = 0;
+          const cpus = os.cpus().length;
+          if (this.lastCpuPid === pid && this.lastCpuTimestamp && this.lastCpuTime !== null) {
+            const elapsed = (now - this.lastCpuTimestamp) / 1000;
+            const delta = totalCpu - this.lastCpuTime;
+            if (elapsed > 0 && delta >= 0) {
+              cpuPercent = Math.min(100, Math.max(0, (delta / elapsed) / cpus * 100));
+            }
+          }
+          this.lastCpuPid = pid;
+          this.lastCpuTime = totalCpu;
+          this.lastCpuTimestamp = now;
+          resolve({ cpu: cpuPercent, memory: { used: totalUsed, total: os.totalmem() } });
         });
       });
     });
@@ -476,12 +640,17 @@ class McServer {
     try {
         this.manualStopRequested = false;
         if (manual) this.restartAttempts = 0;
-        // 使用 shell: true 启动
-        this.process = spawn(command, [], { cwd, shell: true, windowsHide: true });
-        const originalPid = this.process.pid;
-        this.pushLog(`启动命令: ${command}，初始 PID: ${originalPid}`);
+        const launchArgs = this.getLaunchArgs();
+        if (launchArgs.length === 0) {
+          this.pushLog('启动命令未配置，无法启动');
+          return false;
+        }
+        const program = launchArgs[0];
+        const args = launchArgs.slice(1);
+        this.process = spawn(program, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const actualPid = this.process.pid;
+        this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
 
-        // 设置 stdout/stderr 监听
         if (this.process.stdout) {
             this.process.stdout.on('data', (data) => this.pushLog(data.toString()));
         }
@@ -494,6 +663,7 @@ class McServer {
             this.process = null;
             this.stopPlayerListPolling();
             this.stopStatsPolling();
+            this.clearRestartResetTimer();
             if (!this.manualStopRequested && this.config.autoRestart) {
                 this.scheduleAutoRestart();
             }
@@ -501,28 +671,17 @@ class McServer {
         this.process.on('error', (err) => {
             this.pushLog(`启动失败: ${err.message}`);
             this.process = null;
+            this.clearRestartResetTimer();
         });
-
-        // === 新增：延迟查找真正的 Java 子进程 ===
-        setTimeout(async () => {
-            if (!this.process) return;
-            const javaPid = await this.findJavaSubProcess(originalPid, 8000);
-            if (javaPid && javaPid !== originalPid) {
-                this.process.pid = javaPid;   // 更新为实际 Java 进程 PID
-                this.pushLog(`已将监控 PID 从 ${originalPid} 更新为 ${javaPid}`);
-                // 重启 stats 轮询，使用新的 PID
-                this.stopStatsPolling();
-                this.startStatsPolling();
-            }
-        }, 2000);  // 等待 2 秒让子进程启动
-        // === 新增结束 ===
 
         this.startPlayerListPolling();
         this.startStatsPolling();
+        this.resetRestartAttemptsAfterStableRun();
         return true;
     } catch (e) {
         this.pushLog(`启动异常: ${e.message}`);
         this.process = null;
+        this.clearRestartResetTimer();
         return false;
     }
   }
@@ -574,12 +733,17 @@ class McServer {
 
   sendCommand(cmd) {
     if (!cmd || !this.process) return false;
+    if (this.process.recovered) {
+      this.pushLog(`命令发送失败：进程处于恢复只读模式，无法发送命令: ${cmd}`);
+      return false;
+    }
     try {
       if (this.process.stdin && !this.process.stdin.destroyed) {
         this.process.stdin.write(cmd + '\n');
         this.pushLog('> ' + cmd);
         return true;
       }
+      this.pushLog(`命令发送失败：stdin 未就绪，无法发送命令: ${cmd}`);
       return false;
     } catch (e) {
       this.pushLog(`发送命令失败: ${e.message}`);
@@ -715,7 +879,10 @@ class McServer {
         this.pushLog('警告: save-off 命令发送失败，备份期间数据可能不一致');
       }
       this.sendCommand('save-all');
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const success = await this.waitForSaveAllConfirmation(15000);
+      if (!success) {
+        this.pushLog('警告: 未检测到 save-all 完成确认，继续备份可能会导致数据不一致');
+      }
     }
 
     try {
@@ -782,6 +949,38 @@ class McServer {
         const players = m[3] ? m[3].replace(/^\[|\]$/g, '').split(/,\s*/).map(p => p.replace(/^"|"$/g, '').trim()).filter(Boolean) : [];
         return { count, max, players };
       }
+    }
+    return null;
+  }
+
+  async discoverExistingProcess() {
+    if (this.process) return this.process;
+    const jarName = path.basename(String(this.config.jarPath || 'server.jar'));
+    let pid = null;
+    if (process.platform === 'win32') {
+      try {
+        const out = await this.runChildProcess('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'java.exe' -and $_.CommandLine -match '${jarName}' } | Select-Object -First 1 -ExpandProperty ProcessId`
+        ], { windowsHide: true });
+        pid = parseInt(out.trim(), 10);
+      } catch (e) {
+        // ignore
+      }
+    } else {
+      try {
+        const out = await this.runChildProcess('sh', ['-c', `ps -eo pid,comm,args | grep '[j]ava' | grep -F '${jarName}' | awk '{print $1; exit}'`], { windowsHide: true });
+        pid = parseInt(out.trim(), 10);
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (pid && !Number.isNaN(pid) && pid > 0) {
+      this.process = { pid, recovered: true };
+      this.stopPlayerListPolling();
+      this.stopStatsPolling();
+      this.pushLog(`已检测到现有 MC 进程 ${pid}，进入只读恢复模式`);
+      return this.process;
     }
     return null;
   }

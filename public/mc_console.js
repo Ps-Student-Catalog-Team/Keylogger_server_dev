@@ -412,8 +412,8 @@ function initMcStatsChart() {
       labels: [],
       datasets: [
         { label: 'CPU %', data: [], backgroundColor: gradientCpu, borderColor: '#3b82f6', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
-        { label: '内存 MB', data: [], backgroundColor: gradientMem, borderColor: '#10b981', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
-        { label: 'TPS', data: [], backgroundColor: gradientTps, borderColor: '#f59e0b', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y1' }
+        { label: '内存 MB', data: [], backgroundColor: gradientMem, borderColor: '#10b981', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y1' },
+        { label: 'TPS', data: [], backgroundColor: gradientTps, borderColor: '#f59e0b', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0, yAxisID: 'y2' }
       ]
     },
     options: {
@@ -428,8 +428,11 @@ function initMcStatsChart() {
           callbacks: {
             label(context) {
               const value = context.parsed.y;
-              if (context.dataset.yAxisID === 'y1') return `${context.dataset.label}: ${value ?? '-'} `;
-              return `${context.dataset.label}: ${value ?? '-'}${context.dataset.label === 'CPU %' ? '%' : ''}`;
+              if (value == null || Number.isNaN(value)) return `${context.dataset.label}: -`;
+              if (context.dataset.label === 'CPU %') return `CPU: ${value.toFixed(1)} %`;
+              if (context.dataset.label === '内存 MB') return `内存: ${value.toFixed(0)} MB`;
+              if (context.dataset.label === 'TPS') return `TPS: ${value.toFixed(2)}`;
+              return `${context.dataset.label}: ${value}`;
             }
           }
         }
@@ -443,13 +446,22 @@ function initMcStatsChart() {
         y: {
           type: 'linear',
           position: 'left',
-          title: { display: true, text: 'CPU (%) / 内存 (MB)' },
+          title: { display: true, text: 'CPU (%)' },
           beginAtZero: true,
           grid: { color: 'rgba(107, 117, 128, 0.12)' }
         },
         y1: {
           type: 'linear',
           position: 'right',
+          offset: true,
+          title: { display: true, text: '内存 (MB)' },
+          beginAtZero: true,
+          grid: { drawOnChartArea: false, color: 'rgba(107, 117, 128, 0.12)' }
+        },
+        y2: {
+          type: 'linear',
+          position: 'right',
+          offset: true,
           title: { display: true, text: 'TPS' },
           beginAtZero: true,
           grid: { drawOnChartArea: false, color: 'rgba(107, 117, 128, 0.12)' },
@@ -525,8 +537,8 @@ function updateMcStats(cpu, memory, tps) {
     tpsNode.textContent = tpsValue != null ? tpsValue.toFixed(2) : '-';
   }
 
-  mcStatsHistory.cpu.push(cpuValue != null ? cpuValue : 0);
-  mcStatsHistory.memory.push(memoryValue.used != null ? memoryValue.used / 1024 / 1024 : 0);
+  mcStatsHistory.cpu.push(cpuValue != null ? cpuValue : null);
+  mcStatsHistory.memory.push(memoryValue.used != null ? memoryValue.used / 1024 / 1024 : null);
   mcStatsHistory.tps.push(tpsValue != null ? tpsValue : null);
   mcStatsHistory.labels.push(Date.now());
 

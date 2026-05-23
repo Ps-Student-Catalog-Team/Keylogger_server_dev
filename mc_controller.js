@@ -251,7 +251,7 @@ function parsePlayerList(stdoutLine) {
 function parseTpsValue(stdoutLine) {
   if (!stdoutLine) return null;
   const cleaned = stripMcColorCodes(stdoutLine);
-  const regex = /TPS(?:\s*from\s*last[^:]*:)?\s*([0-9]+(?:\.[0-9]+)?)/i;
+  const regex = /TPS(?:\s*from\s*last[^:：]*)?[:：]?\s*([0-9]+(?:\.[0-9]+)?)/i;
   const match = cleaned.match(regex);
   if (match) {
     return parseFloat(match[1]);

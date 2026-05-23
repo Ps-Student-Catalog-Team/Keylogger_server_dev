@@ -493,7 +493,8 @@ app.put('/api/mc/servers/:id', asyncHandler(async (req, res) => {
         const server = await mcManager.updateServer(req.params.id, req.body || {});
         res.json({ success: true, server: { id: server.id, name: server.config.name, display_name: server.config.display_name, config: server.config, status: server.getStatus() } });
     } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
+        const statusCode = e.message === 'autoBackupCron 格式无效' ? 400 : 500;
+        res.status(statusCode).json({ success: false, error: e.message });
     }
 }));
 
@@ -516,9 +517,14 @@ mcRouter.get('/config', asyncHandler(async (req, res) => {
 
 mcRouter.post('/config', asyncHandler(async (req, res) => {
     const config = req.body || {};
-    req.mcServer.setConfig(config);
-    await mcManager.updateServer(req.params.id, { config: req.mcServer.config });
-    res.json({ success: true, message: '配置已保存' });
+    try {
+        req.mcServer.setConfig(config);
+        await mcManager.updateServer(req.params.id, { config: req.mcServer.config });
+        res.json({ success: true, message: '配置已保存' });
+    } catch (e) {
+        const statusCode = e.message === 'autoBackupCron 格式无效' ? 400 : 500;
+        res.status(statusCode).json({ success: false, error: e.message });
+    }
 }));
 
 mcRouter.get('/players', asyncHandler(async (req, res) => {
@@ -570,9 +576,20 @@ mcRouter.get('/logs/download', asyncHandler(async (req, res) => {
 }));
 
 mcRouter.post('/sync', asyncHandler(async (req, res) => {
-    // 临时实现：返回当前实例状态，提示完整的进程恢复功能待实现
-    const status = req.mcServer.getStatus ? req.mcServer.getStatus() : { running: false };
-    res.json({ success: true, message: '该功能正在开发中，返回当前实例状态供参考', status });
+    let status = req.mcServer.getStatus ? req.mcServer.getStatus() : { running: false };
+    if (!status.running) {
+      const recovered = await req.mcServer.discoverExistingProcess();
+      if (recovered) {
+        status = req.mcServer.getStatus();
+      }
+    }
+    if (status.running && status.recovered) {
+      return res.json({ success: true, message: '已检测到现有 MC 进程，进入只读恢复模式。命令发送受限，仅支持日志/状态查看。', status });
+    }
+    if (status.running) {
+      return res.json({ success: true, message: 'MC 服务器正在运行。', status });
+    }
+    res.json({ success: true, message: '未检测到可管理的 MC 进程。若进程仍在运行，请检查服务器配置或手动清理僵尸进程。', status });
 }));
 
 mcRouter.post('/backup', asyncHandler(async (req, res) => {
@@ -1038,7 +1055,7 @@ async function executeWithRetry(sql, params, retries = CONFIG.db.maxRetries) {
 async function isNetworkIpAllowed(ip) {
     if (!ip) return false;
     try {
-        const [rows] = await executeWithRetry(
+        const rows = await executeWithRetry(
             'SELECT 1 FROM network_ips WHERE ip = ? LIMIT 1',
             [ip]
         );
@@ -1181,7 +1198,7 @@ async function ensureMcServersTable() {
 
 async function migrateLegacyMcConfig() {
     try {
-        const [rows] = await executeWithRetry('SELECT COUNT(*) AS count FROM mc_servers', []);
+        const rows = await executeWithRetry('SELECT COUNT(*) AS count FROM mc_servers', []);
         if (rows.length && rows[0].count > 0) return;
         const configFile = path.join(__dirname, 'mc_config.json');
         if (!fs.existsSync(configFile)) return;
@@ -1193,7 +1210,7 @@ async function migrateLegacyMcConfig() {
         const config = Object.assign({}, legacyConfig, { name, display_name: displayName });
         // 先检查是否已存在同名记录，避免 UNIQUE 冲突日志
         try {
-            const [existing] = await executeWithRetry('SELECT id FROM mc_servers WHERE name = ?', [name]);
+            const existing = await executeWithRetry('SELECT id FROM mc_servers WHERE name = ?', [name]);
             if (existing && existing.length > 0) {
                 logger.info('跳过迁移：mc_servers 表已存在同名实例', { name });
             } else {
@@ -1201,7 +1218,11 @@ async function migrateLegacyMcConfig() {
                 logger.info('已迁移旧 MC 配置到 mc_servers 表');
             }
         } catch (e) {
-            logger.warn('迁移旧 MC 配置时数据库操作失败', { error: e.message });
+            if (e.code === 'ER_DUP_ENTRY') {
+                logger.info('迁移旧 MC 配置时检测到同名记录，已跳过插入', { name });
+            } else {
+                logger.warn('迁移旧 MC 配置时数据库操作失败', { error: e.message });
+            }
         }
     } catch (error) {
         logger.warn('迁移旧 MC 配置失败:', error.message);
