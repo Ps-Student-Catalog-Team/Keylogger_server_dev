@@ -279,7 +279,7 @@ class McServer {
     const maxMemory = String(this.config.maxMemory || '4096M').trim();
     const args = String(this.config.additionalArgs || '').trim();
     if (!jarPath) return '';
-    return `${javaPath} -Xms${minMemory} -Xmx${maxMemory} -jar ${jarPath} nogui ${args}`.trim();
+    return `${javaPath} -Xms${minMemory} -Xmx${maxMemory}${args ? ` ${args}` : ''} -jar ${jarPath} nogui`.trim();
   }
 
   getLaunchArgs() {
@@ -292,10 +292,11 @@ class McServer {
     const minMemory = String(this.config.minMemory || '1024M').trim();
     const maxMemory = String(this.config.maxMemory || '4096M').trim();
     const args = String(this.config.additionalArgs || '').trim();
-    const result = [javaPath, `-Xms${minMemory}`, `-Xmx${maxMemory}`, '-jar', jarPath, 'nogui'];
+    const result = [javaPath, `-Xms${minMemory}`, `-Xmx${maxMemory}`];
     if (args) {
       result.push(...this.parseCommandString(args));
     }
+    result.push('-jar', jarPath, 'nogui');
     return this.ensureJlineTerminalArg(result);
   }
 

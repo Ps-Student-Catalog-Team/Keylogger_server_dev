@@ -700,6 +700,13 @@ function handleWebSocketMessage(data) {
     }
 }
 
+function copyCommandPreview() {
+    const preview = document.getElementById('mcConfigCommandPreview');
+    preview.select();
+    document.execCommand('copy');
+    showToast('命令已复制到剪贴板', 'success');
+}
+
 function formatConsoleTimestamp(timestamp) {
     const date = new Date(timestamp);
     const pad = (value, length = 2) => String(value).padStart(length, '0');

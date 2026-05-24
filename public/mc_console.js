@@ -473,6 +473,19 @@ function initMcStatsChart() {
   });
 }
 
+function updateCommandPreview() {
+    const java = document.getElementById('mcJavaPath')?.value.trim() || 'java';
+    const minMem = document.getElementById('mcMinMemory')?.value.trim() || '1024M';
+    const maxMem = document.getElementById('mcMaxMemory')?.value.trim() || '4096M';
+    const jar = document.getElementById('mcJarPath')?.value.trim() || 'server.jar';
+    const args = document.getElementById('mcAdditionalArgs')?.value.trim() || '';
+    let cmd = `${java} -Xms${minMem} -Xmx${maxMem}`;
+    if (args) cmd += ` ${args}`;
+    cmd += ` -jar ${jar} nogui`;
+    const preview = document.getElementById('mcConfigCommandPreview');
+    if (preview) preview.value = cmd;   // textarea 也支持 .value
+}
+
 function getMcStatsDisplayCount() {
   return MC_STATS_CHART_RANGES[mcStatsChartRange] || mcStatsHistory.labels.length;
 }
@@ -653,77 +666,116 @@ function downloadMcLog() {
 }
 
 async function loadMcConfig() {
-  try {
-    await ensureMcServerSelected();
-    updateMcSelectedServerLabel();
-    const response = await fetch(mcApi('/config'));
-    const data = await response.json();
-    if (!data.success) {
-      showToast(data.message || '获取 MC 配置失败', 'error');
-      return;
+    try {
+        await ensureMcServerSelected();
+        updateMcSelectedServerLabel();
+        const response = await fetch(mcApi('/config'));
+        const data = await response.json();
+        if (!data.success) {
+            showToast(data.message || '获取 MC 配置失败', 'error');
+            return;
+        }
+        const cfg = data.config;
+
+        // 分解字段
+        document.getElementById('mcJavaPath').value = cfg.javaPath || 'java';
+        document.getElementById('mcMinMemory').value = cfg.minMemory || '1024M';
+        document.getElementById('mcMaxMemory').value = cfg.maxMemory || '4096M';
+        document.getElementById('mcJarPath').value = cfg.jarPath || 'server.jar';
+        document.getElementById('mcAdditionalArgs').value = cfg.additionalArgs || '';
+
+        // 其他配置
+        document.getElementById('mcConfigDir').value = cfg.workingDir || '';
+        const autoRestartCheckbox = document.getElementById('mcAutoRestartInput');
+        if (autoRestartCheckbox) autoRestartCheckbox.checked = !!cfg.autoRestart;
+        const delay = document.getElementById('mcAutoRestartDelay');
+        if (delay && typeof cfg.autoRestartDelaySeconds === 'number') delay.value = cfg.autoRestartDelaySeconds;
+        const maxRetries = document.getElementById('mcAutoRestartMaxRetries');
+        if (maxRetries && typeof cfg.autoRestartMaxRetries === 'number') maxRetries.value = cfg.autoRestartMaxRetries;
+        const backupDirInput = document.getElementById('mcBackupDir');
+        if (backupDirInput && typeof cfg.backupDir === 'string') backupDirInput.value = cfg.backupDir || '';
+        const autoBackupCheckbox = document.getElementById('mcAutoBackupEnable');
+        if (autoBackupCheckbox) autoBackupCheckbox.checked = !!cfg.autoBackupEnabled;
+        const autoBackupCron = document.getElementById('mcAutoBackupCron');
+        if (autoBackupCron && typeof cfg.autoBackupCron === 'string') autoBackupCron.value = cfg.autoBackupCron || '';
+        const retentionCount = document.getElementById('mcBackupRetentionCount');
+        if (retentionCount && typeof cfg.backupRetentionCount === 'number') retentionCount.value = cfg.backupRetentionCount;
+        const retentionDays = document.getElementById('mcBackupRetentionDays');
+        if (retentionDays && typeof cfg.backupRetentionDays === 'number') retentionDays.value = cfg.backupRetentionDays;
+        const playerInt = document.getElementById('mcPlayerListInterval');
+        if (playerInt && typeof cfg.playerListIntervalSeconds === 'number') playerInt.value = cfg.playerListIntervalSeconds;
+
+        // 更新命令预览
+        updateCommandPreview();
+
+        // 兼容旧配置：如果只有 fullCommand 而没有分解字段，给个提示
+        if (cfg.fullCommand && !cfg.javaPath && !cfg.jarPath) {
+            showToast('检测到旧版完整命令配置，请重新填写分解字段并保存', 'warning');
+        }
+
+        updateMcAutoRestartDisplay(!!cfg.autoRestart);
+    } catch (error) {
+        console.error('加载 MC 配置失败:', error);
+        showToast('加载 MC 配置失败', 'error');
     }
-    document.getElementById('mcConfigCommand').value = data.config.fullCommand || '';
-    document.getElementById('mcConfigDir').value = data.config.workingDir || '';
-    const autoRestartCheckbox = document.getElementById('mcAutoRestartInput');
-    if (autoRestartCheckbox) autoRestartCheckbox.checked = !!data.config.autoRestart;
-    const delay = document.getElementById('mcAutoRestartDelay');
-    if (delay && typeof data.config.autoRestartDelaySeconds === 'number') delay.value = data.config.autoRestartDelaySeconds;
-    const maxRetries = document.getElementById('mcAutoRestartMaxRetries');
-    if (maxRetries && typeof data.config.autoRestartMaxRetries === 'number') maxRetries.value = data.config.autoRestartMaxRetries;
-    const backupDirInput = document.getElementById('mcBackupDir');
-    if (backupDirInput && typeof data.config.backupDir === 'string') backupDirInput.value = data.config.backupDir || '';
-    const autoBackupCheckbox = document.getElementById('mcAutoBackupEnable');
-    if (autoBackupCheckbox) autoBackupCheckbox.checked = !!data.config.autoBackupEnabled;
-    const autoBackupCron = document.getElementById('mcAutoBackupCron');
-    if (autoBackupCron && typeof data.config.autoBackupCron === 'string') autoBackupCron.value = data.config.autoBackupCron || '';
-    const retentionCount = document.getElementById('mcBackupRetentionCount');
-    if (retentionCount && typeof data.config.backupRetentionCount === 'number') retentionCount.value = data.config.backupRetentionCount;
-    const retentionDays = document.getElementById('mcBackupRetentionDays');
-    if (retentionDays && typeof data.config.backupRetentionDays === 'number') retentionDays.value = data.config.backupRetentionDays;
-    const playerInt = document.getElementById('mcPlayerListInterval');
-    if (playerInt && typeof data.config.playerListIntervalSeconds === 'number') playerInt.value = data.config.playerListIntervalSeconds;
-    updateMcAutoRestartDisplay(!!data.config.autoRestart);
-  } catch (error) {
-    console.error('加载 MC 配置失败:', error);
-    showToast('加载 MC 配置失败', 'error');
-  }
 }
 
 async function saveMcConfig() {
-  const fullCommand = document.getElementById('mcConfigCommand')?.value.trim();
-  const workingDir = document.getElementById('mcConfigDir')?.value.trim();
-  const autoRestart = !!document.getElementById('mcAutoRestartInput')?.checked;
-  const autoRestartDelaySeconds = parseInt(document.getElementById('mcAutoRestartDelay')?.value || '0', 10) || undefined;
-  const autoRestartMaxRetries = parseInt(document.getElementById('mcAutoRestartMaxRetries')?.value || '0', 10) || undefined;
-  const backupDir = document.getElementById('mcBackupDir')?.value.trim();
-  const autoBackupEnabled = !!document.getElementById('mcAutoBackupEnable')?.checked;
-  const autoBackupCron = document.getElementById('mcAutoBackupCron')?.value.trim();
-  const backupRetentionCount = parseInt(document.getElementById('mcBackupRetentionCount')?.value || '0', 10) || undefined;
-  const backupRetentionDays = parseInt(document.getElementById('mcBackupRetentionDays')?.value || '0', 10) || undefined;
-  const playerListIntervalSeconds = parseInt(document.getElementById('mcPlayerListInterval')?.value || '0', 10) || undefined;
-  try {
-    const response = await fetch(mcApi('/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fullCommand, workingDir, backupDir, autoBackupEnabled, autoBackupCron, backupRetentionCount, backupRetentionDays, autoRestart, autoRestartDelaySeconds, autoRestartMaxRetries, playerListIntervalSeconds }),
-    });
-    const data = await response.json();
-    if (data.success) {
-      showToast('MC 配置已保存', 'success');
-      // 保存后刷新配置，确保表单与后端状态同步
-      try {
-        await loadMcConfig();
-      } catch (e) {
-        console.warn('保存后刷新 MC 配置失败', e);
-      }
-      updateMcAutoRestartDisplay(autoRestart);
-    } else {
-      showToast(data.error || data.message || '保存 MC 配置失败', 'error');
+    const javaPath = document.getElementById('mcJavaPath')?.value.trim() || '';
+    const minMemory = document.getElementById('mcMinMemory')?.value.trim() || '';
+    const maxMemory = document.getElementById('mcMaxMemory')?.value.trim() || '';
+    const jarPath = document.getElementById('mcJarPath')?.value.trim() || '';
+    const additionalArgs = document.getElementById('mcAdditionalArgs')?.value.trim() || '';
+    const workingDir = document.getElementById('mcConfigDir')?.value.trim() || '';
+    const autoRestart = !!document.getElementById('mcAutoRestartInput')?.checked;
+    const autoRestartDelaySeconds = parseInt(document.getElementById('mcAutoRestartDelay')?.value || '0', 10) || undefined;
+    const autoRestartMaxRetries = parseInt(document.getElementById('mcAutoRestartMaxRetries')?.value || '0', 10) || undefined;
+    const backupDir = document.getElementById('mcBackupDir')?.value.trim() || '';
+    const autoBackupEnabled = !!document.getElementById('mcAutoBackupEnable')?.checked;
+    const autoBackupCron = document.getElementById('mcAutoBackupCron')?.value.trim() || '';
+    const backupRetentionCount = parseInt(document.getElementById('mcBackupRetentionCount')?.value || '0', 10) || undefined;
+    const backupRetentionDays = parseInt(document.getElementById('mcBackupRetentionDays')?.value || '0', 10) || undefined;
+    const playerListIntervalSeconds = parseInt(document.getElementById('mcPlayerListInterval')?.value || '0', 10) || undefined;
+
+    // 构建配置对象（不使用 fullCommand）
+    const configPayload = {
+        javaPath,
+        minMemory,
+        maxMemory,
+        jarPath,
+        additionalArgs,
+        fullCommand: '',          // 清空完整命令，让服务端使用分解字段
+        workingDir,
+        backupDir,
+        autoBackupEnabled,
+        autoBackupCron,
+        backupRetentionCount,
+        backupRetentionDays,
+        autoRestart,
+        autoRestartDelaySeconds,
+        autoRestartMaxRetries,
+        playerListIntervalSeconds
+    };
+
+    try {
+        const response = await fetch(mcApi('/config'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(configPayload),
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('MC 配置已保存', 'success');
+            // 重新加载配置以同步
+            await loadMcConfig();
+            updateMcAutoRestartDisplay(autoRestart);
+        } else {
+            showToast(data.error || data.message || '保存 MC 配置失败', 'error');
+        }
+    } catch (error) {
+        console.error('保存 MC 配置失败:', error);
+        showToast('保存 MC 配置失败', 'error');
     }
-  } catch (error) {
-    console.error('保存 MC 配置失败:', error);
-    showToast('保存 MC 配置失败', 'error');
-  }
 }
 
 async function loadMcStatus() {
@@ -1108,3 +1160,14 @@ try {
 } catch (e) {
   // ignore
 }
+
+// 监听分解字段输入，实时更新命令预览
+document.addEventListener('DOMContentLoaded', () => {
+    const previewFields = ['mcJavaPath', 'mcMinMemory', 'mcMaxMemory', 'mcJarPath', 'mcAdditionalArgs'];
+    previewFields.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateCommandPreview);
+    });
+    // 若页面已加载但尚未触发（例如通过动态切换页面），手动调用一次
+    updateCommandPreview();
+});
