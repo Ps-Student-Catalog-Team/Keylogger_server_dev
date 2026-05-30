@@ -732,11 +732,14 @@ function handleWebSocketMessage(data) {
     }
 }
 
-function copyCommandPreview() {
+async function copyCommandPreview() {
     const preview = document.getElementById('mcConfigCommandPreview');
-    preview.select();
-    document.execCommand('copy');
-    showToast('命令已复制到剪贴板', 'success');
+    try {
+        await navigator.clipboard.writeText(preview.value);
+        showToast('命令已复制到剪贴板', 'success');
+    } catch (err) {
+        showToast('复制失败', 'error');
+    }
 }
 
 function formatConsoleTimestamp(timestamp) {
