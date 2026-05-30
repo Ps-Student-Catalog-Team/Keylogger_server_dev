@@ -1515,3 +1515,542 @@ tr:last-child td {
 }
 
 /* End of extracted CSS */
+
+/* ========== 暗色主题样式 ========== */
+:root.dark-theme {
+    --primary: #60a5fa;
+    --primary-dark: #3b82f6;
+    --success: #34d399;
+    --success-dark: #10b981;
+    --danger: #f87171;
+    --danger-dark: #ef4444;
+    --warning: #fbbf24;
+    --warning-dark: #f59e0b;
+    --info: #60a5fa;
+    --info-dark: #3b82f6;
+    --light: #1f2937;
+    --dark: #f9fafb;
+    --gray: #9ca3af;
+    --gray-light: #374151;
+    --white: #111827;
+    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.4);
+}
+
+:root.dark-theme body {
+    background: #0f172a;
+    color: #f1f5f9;
+}
+
+:root.dark-theme .header {
+    background: #1e293b;
+    color: #f1f5f9;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+}
+
+:root.dark-theme .header h1 {
+    color: #60a5fa;
+}
+
+:root.dark-theme .sidebar {
+    background: #1e293b;
+    border-right: 1px solid #334155;
+    box-shadow: 2px 0 6px rgba(0, 0, 0, 0.2);
+}
+
+:root.dark-theme .sidebar h3 {
+    color: #94a3b8;
+}
+
+:root.dark-theme .nav-item {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .nav-item:hover {
+    background: #334155;
+}
+
+:root.dark-theme .nav-item.active {
+    background: #3b82f6;
+    color: white;
+}
+
+:root.dark-theme .nav-sub-items {
+    background: rgba(30, 41, 59, 0.5);
+}
+
+:root.dark-theme .menu-parent {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .container {
+    background: #0f172a;
+}
+
+:root.dark-theme .main-content {
+    background: #0f172a;
+}
+
+:root.dark-theme .toolbar {
+    background: #1e293b;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .card:hover {
+    border-color: #60a5fa;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+}
+
+:root.dark-theme .card h3 {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .card h3::after {
+    background: #3b82f6;
+}
+
+:root.dark-theme table {
+    background: #1e293b;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme th {
+    background: #0f172a;
+    color: #94a3b8;
+    border-bottom: 2px solid #334155;
+}
+
+:root.dark-theme th:hover {
+    background: #1e293b;
+}
+
+:root.dark-theme td {
+    color: #f1f5f9;
+    border-bottom: 1px solid #334155;
+}
+
+:root.dark-theme tr:nth-child(even) {
+    background: rgba(15, 23, 42, 0.5);
+}
+
+:root.dark-theme tr:hover {
+    background: #334155;
+}
+
+:root.dark-theme .empty-state {
+    background: #0f172a;
+    color: #94a3b8;
+}
+
+:root.dark-theme .empty-state i {
+    color: #60a5fa;
+}
+
+:root.dark-theme input[type="text"],
+:root.dark-theme input[type="number"],
+:root.dark-theme textarea {
+    background: #0f172a;
+    border: 2px solid #334155;
+    color: #f1f5f9;
+}
+
+:root.dark-theme input[type="text"]:focus,
+:root.dark-theme input[type="number"]:focus,
+:root.dark-theme textarea:focus {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+}
+
+:root.dark-theme input::placeholder {
+    color: #64748b;
+}
+
+:root.dark-theme select {
+    background: #0f172a;
+    border: 2px solid #334155;
+    color: #f1f5f9;
+}
+
+:root.dark-theme select:focus {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+}
+
+:root.dark-theme .btn {
+    background: #334155;
+    color: #f1f5f9;
+    border: 1px solid #475569;
+}
+
+:root.dark-theme .btn:hover {
+    background: #475569;
+}
+
+:root.dark-theme .btn-primary {
+    background: #3b82f6;
+    color: white;
+}
+
+:root.dark-theme .btn-primary:hover {
+    background: #2563eb;
+}
+
+:root.dark-theme .btn-success {
+    background: #10b981;
+    color: white;
+}
+
+:root.dark-theme .btn-success:hover {
+    background: #059669;
+}
+
+:root.dark-theme .btn-danger {
+    background: #ef4444;
+    color: white;
+}
+
+:root.dark-theme .btn-danger:hover {
+    background: #dc2626;
+}
+
+:root.dark-theme .btn-warning {
+    background: #f59e0b;
+    color: white;
+}
+
+:root.dark-theme .btn-warning:hover {
+    background: #d97706;
+}
+
+:root.dark-theme .btn-secondary {
+    background: #475569;
+    color: white;
+}
+
+:root.dark-theme .btn-secondary:hover {
+    background: #6b7280;
+}
+
+:root.dark-theme .btn-outline-danger {
+    background: transparent;
+    color: #f87171;
+    border: 1.5px solid #f87171;
+}
+
+:root.dark-theme .btn-outline-danger:hover {
+    background: #f87171;
+    color: white;
+}
+
+:root.dark-theme .modal {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+:root.dark-theme .modal-content {
+    background: #1e293b;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .modal-header h3 {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .close-btn {
+    color: #94a3b8;
+}
+
+:root.dark-theme .close-btn:hover {
+    background: #334155;
+    color: #f1f5f9;
+}
+
+:root.dark-theme .tabs {
+    border-bottom: 1px solid #334155;
+}
+
+:root.dark-theme .tab {
+    color: #94a3b8;
+}
+
+:root.dark-theme .tab:hover {
+    background: #334155;
+    color: #60a5fa;
+}
+
+:root.dark-theme .tab.active {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.1);
+}
+
+:root.dark-theme .form-group label {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .status-badge {
+    border: 1px solid currentColor;
+}
+
+:root.dark-theme .status-online {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+}
+
+:root.dark-theme .status-offline {
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+}
+
+:root.dark-theme .status-recording {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+}
+
+:root.dark-theme .status-paused {
+    background: rgba(100, 116, 139, 0.15);
+    color: #94a3b8;
+}
+
+:root.dark-theme .mc-stats-card {
+    background: rgba(30, 41, 59, 0.95);
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .mc-stats-card span {
+    color: #94a3b8;
+}
+
+:root.dark-theme .mc-stats-card strong {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .mc-stats-chart-wrapper {
+    background: rgba(30, 41, 59, 0.95);
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .mc-player-empty {
+    background: rgba(15, 23, 42, 0.8);
+    color: #94a3b8;
+}
+
+:root.dark-theme .toast {
+    color: white;
+}
+
+:root.dark-theme .console-panel {
+    background: #0b1118;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .console-toolbar input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #d0f0b7;
+}
+
+:root.dark-theme .terminal-button {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #94a3b8;
+}
+
+:root.dark-theme .terminal-button.active,
+:root.dark-theme .terminal-button:hover {
+    background: #3b82f6;
+    color: white;
+    border-color: #3b82f6;
+}
+
+:root.dark-theme .console-input-area input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #d0f0b7;
+}
+
+:root.dark-theme .spinner {
+    border: 2px solid #334155;
+    border-top-color: #60a5fa;
+}
+
+:root.dark-theme .scan-progress {
+    background: #0f172a;
+    color: #94a3b8;
+}
+
+:root.dark-theme .file-list-container {
+    background: #0f172a;
+    border: 1.5px solid #334155;
+}
+
+:root.dark-theme .file-item {
+    border-bottom: 1px solid #334155;
+}
+
+:root.dark-theme .file-item:hover {
+    background: #334155;
+}
+
+:root.dark-theme .file-item .file-name {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .extract-list {
+    background: #0f172a;
+}
+
+:root.dark-theme .extract-list .extract-item {
+    border-bottom: 1px solid #334155;
+}
+
+:root.dark-theme .extract-list .extract-item:hover {
+    background: rgba(96, 165, 250, 0.05);
+}
+
+:root.dark-theme .extract-list .extract-item:nth-child(even) {
+    background: rgba(15, 23, 42, 0.5);
+}
+
+:root.dark-theme .extract-header {
+    background: #0f172a !important;
+    color: #f1f5f9 !important;
+    border-bottom: 1px solid #334155 !important;
+}
+
+:root.dark-theme .extract-list .password-content {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .extract-list .source-file {
+    color: #94a3b8;
+}
+
+:root.dark-theme .extract-list .timestamp {
+    color: #94a3b8;
+}
+
+:root.dark-theme .extract-empty {
+    background: #0f172a;
+    color: #94a3b8;
+}
+
+:root.dark-theme .extract-empty i {
+    color: #60a5fa;
+}
+
+:root.dark-theme .log-viewer {
+    background: #0f172a;
+    color: #f1f5f9;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .log-viewer::-webkit-scrollbar-track {
+    background: #1e293b;
+}
+
+:root.dark-theme .log-viewer::-webkit-scrollbar-thumb {
+    background: #475569;
+}
+
+:root.dark-theme .log-viewer::-webkit-scrollbar-thumb:hover {
+    background: #60a5fa;
+}
+
+:root.dark-theme ::-webkit-scrollbar-track {
+    background: #1e293b;
+}
+
+:root.dark-theme ::-webkit-scrollbar-thumb {
+    background: #475569;
+}
+
+:root.dark-theme ::-webkit-scrollbar-thumb:hover {
+    background: #60a5fa;
+}
+
+:root.dark-theme #mcConfigCommandPreview {
+    background-color: #0f172a;
+    color: #f1f5f9;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme #mcConfigCommandPreview:focus {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2);
+}
+
+:root.dark-theme .switch-slider {
+    background-color: #475569;
+}
+
+:root.dark-theme .switch-text {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .mc-stats-toolbar .mc-stats-range-btn {
+    background: transparent;
+    border: 1px solid #334155;
+    color: #f1f5f9;
+}
+
+:root.dark-theme .mc-stats-toolbar .mc-stats-range-btn.active,
+:root.dark-theme .mc-stats-toolbar .mc-stats-range-btn:hover {
+    background: #3b82f6;
+    color: white;
+    border-color: #3b82f6;
+}
+
+:root.dark-theme .connection-status {
+    color: #f1f5f9;
+}
+
+:root.dark-theme .status-dot {
+    background: var(--danger);
+}
+
+:root.dark-theme .connection-status span {
+    color: #94a3b8;
+}
+
+:root.dark-theme .search-box input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #f1f5f9;
+}
+
+:root.dark-theme .search-box i {
+    color: #64748b;
+}
+
+:root.dark-theme .search-box input::placeholder {
+    color: #64748b;
+}
+
+:root.dark-theme .log-pager {
+    background: #0f172a;
+    border-top: 1px solid #334155;
+    color: #94a3b8;
+}
+
+:root.dark-theme .extract-pager {
+    background: #0f172a;
+    border-top: 1px solid #334155;
+    color: #94a3b8;
+}
+
+:root.dark-theme #mcStdout {
+    background: #0b1118;
+    border: 1px solid #334155;
+}
+
+:root.dark-theme .modal-content::before {
+    background: linear-gradient(90deg, var(--primary), var(--success));
+}
+
+:root.dark-theme .card::before {
+    background: linear-gradient(90deg, var(--primary), var(--success));
+}

@@ -107,9 +107,97 @@
             min-height: 1.2rem;
             font-size: 0.95rem;
         }
+        
+        /* 暗色主题样式 */
+        body.dark-theme {
+            background: #0f172a;
+            color: #f1f5f9;
+        }
+        
+        body.dark-theme .login-shell {
+            background: #1e293b;
+            border: 1px solid #334155;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+        }
+        
+        body.dark-theme .login-title {
+            color: #60a5fa;
+        }
+        
+        body.dark-theme .login-subtitle {
+            color: #94a3b8;
+        }
+        
+        body.dark-theme .control-group label {
+            color: #f1f5f9;
+        }
+        
+        body.dark-theme .control-group input {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #f1f5f9;
+        }
+        
+        body.dark-theme .control-group input:focus {
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.2);
+        }
+        
+        body.dark-theme .control-group input::placeholder {
+            color: #64748b;
+        }
+        
+        body.dark-theme .btn-primary {
+            background: #3b82f6;
+        }
+        
+        body.dark-theme .btn-primary:hover {
+            background: #2563eb;
+        }
+        
+        body.dark-theme .login-footer {
+            color: #94a3b8;
+        }
+        
+        body.dark-theme .error-text {
+            color: #f87171;
+        }
+        
+        .theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: transparent;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.3s ease;
+            z-index: 100;
+        }
+        
+        .theme-toggle:hover {
+            background: #334155;
+            color: #f1f5f9;
+        }
+        
+        body.dark-theme .theme-toggle {
+            border-color: #475569;
+            color: #94a3b8;
+        }
+        
+        body.dark-theme .theme-toggle:hover {
+            background: #475569;
+            color: #f1f5f9;
+        }
     </style>
 </head>
 <body>
+    <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">
+        <i class="fas fa-moon"></i> 切换主题
+    </button>
     <div class="login-shell">
         <div class="login-header">
             <div class="login-title">服务器管理登录</div>
@@ -127,6 +215,34 @@
     </div>
 
     <script>
+        function toggleTheme() {
+            const body = document.body;
+            const themeIcon = document.querySelector('#themeToggle i');
+            
+            if (body.classList.contains('dark-theme')) {
+                body.classList.remove('dark-theme');
+                localStorage.setItem('theme', 'light');
+                themeIcon.className = 'fas fa-moon';
+            } else {
+                body.classList.add('dark-theme');
+                localStorage.setItem('theme', 'dark');
+                themeIcon.className = 'fas fa-sun';
+            }
+        }
+        
+        function initTheme() {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark') {
+                document.body.classList.add('dark-theme');
+                const themeIcon = document.querySelector('#themeToggle i');
+                if (themeIcon) {
+                    themeIcon.className = 'fas fa-sun';
+                }
+            }
+        }
+        
+        initTheme();
+        
         const form = document.getElementById('loginForm');
         const passwordInput = document.getElementById('password');
         const errorText = document.getElementById('errorText');

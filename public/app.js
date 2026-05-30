@@ -53,6 +53,38 @@ Object.defineProperties(window, {
 });
 window.appState = state;
 
+function toggleTheme() {
+    const body = document.body;
+    const themeIcon = document.querySelector('#themeToggle i');
+    
+    if (body.classList.contains('dark-theme')) {
+        body.classList.remove('dark-theme');
+        localStorage.setItem('theme', 'light');
+        if (themeIcon) {
+            themeIcon.className = 'fas fa-moon';
+        }
+    } else {
+        body.classList.add('dark-theme');
+        localStorage.setItem('theme', 'dark');
+        if (themeIcon) {
+            themeIcon.className = 'fas fa-sun';
+        }
+    }
+}
+
+function initTheme() {
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme === 'dark') {
+        document.body.classList.add('dark-theme');
+        const themeIcon = document.querySelector('#themeToggle i');
+        if (themeIcon) {
+            themeIcon.className = 'fas fa-sun';
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initTheme);
+
 const rawFetch = window.fetch.bind(window);
 async function apiFetch(input, init = {}) {
     const headers = new Headers(init.headers || {});

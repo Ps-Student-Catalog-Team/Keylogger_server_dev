@@ -11,6 +11,9 @@
     <div class="header">
     <h1>服务器管理</h1>
     <div style="display: flex; align-items: center; gap: 1.25rem;">
+        <button id="themeToggle" class="btn btn-secondary" onclick="toggleTheme()" title="切换主题" style="padding: 0.5rem 1rem;">
+            <i class="fas fa-moon"></i>
+        </button>
         <div class="connection-status">
             <div class="status-dot" id="wsStatus"></div>
             <span id="wsStatusText">未连接</span>

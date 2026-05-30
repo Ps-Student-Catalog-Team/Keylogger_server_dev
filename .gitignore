@@ -6,3 +6,4 @@ known_clients.json
 backups/
 mc_config.json
 data/mc.pid
+.trae
