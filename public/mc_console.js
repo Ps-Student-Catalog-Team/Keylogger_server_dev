@@ -8,7 +8,11 @@ let mcConsoleFilterText = '';
 let mcStatsChart = null;
 const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
 const MC_STATS_HISTORY_MAX = 240;
-const MC_STATS_CHART_RANGES = { '5m': 20, '15m': 60, '1h': 120 };
+const MC_STATS_CHART_RANGES = {
+  '5m': 5 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '1h': 60 * 60 * 1000
+};
 let mcStatsChartRange = '15m';
 
 // 多服务器支持：当前选中的服务器 ID
@@ -486,19 +490,41 @@ function updateCommandPreview() {
     if (preview) preview.value = cmd;   // textarea 也支持 .value
 }
 
-function getMcStatsDisplayCount() {
-  return MC_STATS_CHART_RANGES[mcStatsChartRange] || mcStatsHistory.labels.length;
+function getMcStatsTimeWindowMs() {
+  return MC_STATS_CHART_RANGES[mcStatsChartRange] || null;
+}
+
+function getMcStatsVisibleSeries() {
+  const windowMs = getMcStatsTimeWindowMs();
+  const now = Date.now();
+  const labels = [];
+  const cpu = [];
+  const memory = [];
+  const tps = [];
+
+  for (let i = 0; i < mcStatsHistory.labels.length; i++) {
+    const timestamp = mcStatsHistory.labels[i];
+    if (windowMs != null && now - timestamp > windowMs) {
+      continue;
+    }
+    labels.push(timestamp);
+    cpu.push(mcStatsHistory.cpu[i]);
+    memory.push(mcStatsHistory.memory[i]);
+    tps.push(mcStatsHistory.tps[i]);
+  }
+
+  return { labels, cpu, memory, tps };
 }
 
 function updateMcStatsChart() {
   if (!mcStatsChart) initMcStatsChart();
   if (!mcStatsChart) return;
-  const displayCount = getMcStatsDisplayCount();
-  const labels = mcStatsHistory.labels.slice(-displayCount).map((ts) => formatMcStatsTimeLabel(ts));
-  mcStatsChart.data.labels = labels;
-  mcStatsChart.data.datasets[0].data = mcStatsHistory.cpu.slice(-displayCount);
-  mcStatsChart.data.datasets[1].data = mcStatsHistory.memory.slice(-displayCount);
-  mcStatsChart.data.datasets[2].data = mcStatsHistory.tps.slice(-displayCount);
+
+  const visible = getMcStatsVisibleSeries();
+  mcStatsChart.data.labels = visible.labels.map((ts) => formatMcStatsTimeLabel(ts));
+  mcStatsChart.data.datasets[0].data = visible.cpu;
+  mcStatsChart.data.datasets[1].data = visible.memory;
+  mcStatsChart.data.datasets[2].data = visible.tps;
   mcStatsChart.update('none');
 }
 
