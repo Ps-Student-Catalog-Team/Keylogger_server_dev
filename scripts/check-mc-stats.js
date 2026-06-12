@@ -36,6 +36,11 @@ async function run() {
   const result = await p1;
   assert.equal(result.cpu, 0);
   assert.equal(result.memory.used, 1024);
+
+  const s4 = new McServer('test');
+  const childResult = await s4.runChildProcess(process.execPath, ['-e', 'process.exit(0)']);
+  assert.equal(childResult, '');
+
   console.log('MC stats checks passed');
 }
 

@@ -7,7 +7,7 @@ let mcLogLines = [];
 let mcConsoleFilterText = '';
 let mcStatsChart = null;
 const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
-const MC_STATS_HISTORY_MAX = 240;
+const MC_STATS_HISTORY_MAX_MS = 60 * 60 * 1000;
 const MC_STATS_CHART_RANGES = {
   '5m': 5 * 60 * 1000,
   '15m': 15 * 60 * 1000,
@@ -516,6 +516,17 @@ function getMcStatsVisibleSeries() {
   return { labels, cpu, memory, tps };
 }
 
+function pruneMcStatsHistory() {
+  const now = Date.now();
+  const cutoff = now - MC_STATS_HISTORY_MAX_MS;
+  while (mcStatsHistory.labels.length > 0 && mcStatsHistory.labels[0] < cutoff) {
+    mcStatsHistory.labels.shift();
+    mcStatsHistory.cpu.shift();
+    mcStatsHistory.memory.shift();
+    mcStatsHistory.tps.shift();
+  }
+}
+
 function updateMcStatsChart() {
   if (!mcStatsChart) initMcStatsChart();
   if (!mcStatsChart) return;
@@ -581,13 +592,7 @@ function updateMcStats(cpu, memory, tps) {
   mcStatsHistory.tps.push(tpsValue != null ? tpsValue : null);
   mcStatsHistory.labels.push(Date.now());
 
-  while (mcStatsHistory.cpu.length > MC_STATS_HISTORY_MAX) {
-    mcStatsHistory.cpu.shift();
-    mcStatsHistory.memory.shift();
-    mcStatsHistory.tps.shift();
-    mcStatsHistory.labels.shift();
-  }
-
+  pruneMcStatsHistory();
   updateMcStatsChart();
 }
 

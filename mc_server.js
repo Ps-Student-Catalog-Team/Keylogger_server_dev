@@ -540,36 +540,26 @@ class McServer {
   }
 
   updateTpsFromLine(line) {
-    console.log('[DEBUG] updateTpsFromLine 被调用，原始行:', line);
-    
-    // 去除 ANSI 转义码（使用更通用的正则）
-    const cleanLine = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-    console.log('[DEBUG] 清理后:', cleanLine);
-    
-    // 匹配 TPS
+    const cleanLine = String(line || '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
     const patterns = [
-        /TPS from last 1m, 5m, 15m:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/i,
-        /TPS from last 1m:\s*([\d.]+)/i,
-        /TPS:\s*([\d.]+)/i,
-        /TPS\s+from\s+last\s+.*?:\s*([\d.]+)/i
+      /TPS from last 1m, 5m, 15m:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/i,
+      /TPS from last 1m:\s*([\d.]+)/i,
+      /TPS:\s*([\d.]+)/i,
+      /TPS\s+from\s+last\s+.*?:\s*([\d.]+)/i
     ];
-    
+
     let tps = null;
     for (const pattern of patterns) {
-        const match = cleanLine.match(pattern);
-        if (match) {
-            tps = parseFloat(match[1]);
-            console.log('[DEBUG] 匹配到的 TPS:', tps);
-            if (!isNaN(tps)) break;
-        }
+      const match = cleanLine.match(pattern);
+      if (match) {
+        tps = parseFloat(match[1]);
+        if (!Number.isNaN(tps)) break;
+      }
     }
-    
-    if (tps !== null && !isNaN(tps)) {
-        this.latestTps = tps;
-        this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: tps });
-        console.log('[TPS] 成功更新 TPS =', tps);
-    } else {
-        console.log('[DEBUG] 未匹配到 TPS');
+
+    if (tps !== null && !Number.isNaN(tps)) {
+      this.latestTps = tps;
+      this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: tps });
     }
   }
 
@@ -766,7 +756,6 @@ class McServer {
         }
         const program = launchArgs[0];
         const args = launchArgs.slice(1);
-        console.error('[DEBUG] spawn 参数:', { program, args, cwd }); 
         this.process = spawn(program, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         const actualPid = this.process.pid;
         this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
@@ -982,12 +971,11 @@ class McServer {
       child.stdout.on('data', (data) => { stdout += this.decodeProcessOutput(data); });
       child.stderr.on('data', (data) => { stderr += this.decodeProcessOutput(data); });
       child.on('close', (code) => {
-        // 即使退出码非0，只要有 stdout 输出就视为成功
-        if (stdout.trim()) {
+        if (code === 0) {
           resolve(stdout);
-        } else {
-          reject(new Error(stderr || `退出码 ${code}`));
+          return;
         }
+        reject(new Error(stderr || stdout || `退出码 ${code}`));
       });
       child.on('error', (err) => reject(err));
     });
