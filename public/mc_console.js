@@ -730,6 +730,8 @@ async function loadMcConfig() {
         if (retentionDays && typeof cfg.backupRetentionDays === 'number') retentionDays.value = cfg.backupRetentionDays;
         const playerInt = document.getElementById('mcPlayerListInterval');
         if (playerInt && typeof cfg.playerListIntervalSeconds === 'number') playerInt.value = cfg.playerListIntervalSeconds;
+        const statsInterval = document.getElementById('mcStatsIntervalSeconds');
+        if (statsInterval) statsInterval.value = (typeof cfg.statsIntervalSeconds === 'number' ? cfg.statsIntervalSeconds : 5);
 
         // 更新命令预览
         updateCommandPreview();
@@ -754,14 +756,21 @@ async function saveMcConfig() {
     const additionalArgs = document.getElementById('mcAdditionalArgs')?.value.trim() || '';
     const workingDir = document.getElementById('mcConfigDir')?.value.trim() || '';
     const autoRestart = !!document.getElementById('mcAutoRestartInput')?.checked;
-    const autoRestartDelaySeconds = parseInt(document.getElementById('mcAutoRestartDelay')?.value || '0', 10) || undefined;
-    const autoRestartMaxRetries = parseInt(document.getElementById('mcAutoRestartMaxRetries')?.value || '0', 10) || undefined;
+    const autoRestartDelayRaw = document.getElementById('mcAutoRestartDelay')?.value;
+    const autoRestartDelaySeconds = autoRestartDelayRaw === '' ? undefined : parseInt(autoRestartDelayRaw, 10);
+    const autoRestartMaxRetriesRaw = document.getElementById('mcAutoRestartMaxRetries')?.value;
+    const autoRestartMaxRetries = autoRestartMaxRetriesRaw === '' ? undefined : parseInt(autoRestartMaxRetriesRaw, 10);
     const backupDir = document.getElementById('mcBackupDir')?.value.trim() || '';
     const autoBackupEnabled = !!document.getElementById('mcAutoBackupEnable')?.checked;
     const autoBackupCron = document.getElementById('mcAutoBackupCron')?.value.trim() || '';
-    const backupRetentionCount = parseInt(document.getElementById('mcBackupRetentionCount')?.value || '0', 10) || undefined;
-    const backupRetentionDays = parseInt(document.getElementById('mcBackupRetentionDays')?.value || '0', 10) || undefined;
-    const playerListIntervalSeconds = parseInt(document.getElementById('mcPlayerListInterval')?.value || '0', 10) || undefined;
+    const backupRetentionCountRaw = document.getElementById('mcBackupRetentionCount')?.value;
+    const backupRetentionCount = backupRetentionCountRaw === '' ? undefined : parseInt(backupRetentionCountRaw, 10);
+    const backupRetentionDaysRaw = document.getElementById('mcBackupRetentionDays')?.value;
+    const backupRetentionDays = backupRetentionDaysRaw === '' ? undefined : parseInt(backupRetentionDaysRaw, 10);
+    const playerListRaw = document.getElementById('mcPlayerListInterval')?.value;
+    const playerListIntervalSeconds = playerListRaw === '' ? undefined : parseInt(playerListRaw, 10);
+    const statsIntervalRaw = document.getElementById('mcStatsIntervalSeconds')?.value;
+    const statsIntervalSeconds = statsIntervalRaw === '' ? undefined : parseInt(statsIntervalRaw, 10);
 
     // 构建配置对象（不使用 fullCommand）
     const configPayload = {
@@ -780,7 +789,8 @@ async function saveMcConfig() {
         autoRestart,
         autoRestartDelaySeconds,
         autoRestartMaxRetries,
-        playerListIntervalSeconds
+        playerListIntervalSeconds,
+        statsIntervalSeconds
     };
 
     try {
@@ -1130,7 +1140,7 @@ async function createMcServer() {
     const response = await fetch('/api/mc/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 0 } })
+      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 0, statsIntervalSeconds: 5 } })
     });
     const result = await response.json();
     if (result.success) {

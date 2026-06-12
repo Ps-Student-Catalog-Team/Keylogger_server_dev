@@ -34,7 +34,8 @@ class McServer {
       autoRestartDelaySeconds: 5,
       autoRestartMaxRetries: 3,
       playerListIntervalSeconds: 0,
-      tpsIntervalSeconds: 1
+      tpsIntervalSeconds: 1,
+      statsIntervalSeconds: 5
     }, config || {});
 
     this.logs = [];
@@ -51,6 +52,7 @@ class McServer {
     this.lastCpuTime = null;
     this.lastCpuTimestamp = null;
     this.lastCpuPid = null;
+    this._statsPending = false;
     this.autoBackupTimer = null;
     this.lastAutoBackupKey = null;
     this.backupInProgress = false;
@@ -84,6 +86,7 @@ class McServer {
     newConfig.autoRestartMaxRetries = Number(newConfig.autoRestartMaxRetries) || 0;
     newConfig.playerListIntervalSeconds = Number(newConfig.playerListIntervalSeconds) || 0;
     newConfig.tpsIntervalSeconds = Number(newConfig.tpsIntervalSeconds) || 0;
+    newConfig.statsIntervalSeconds = Number(newConfig.statsIntervalSeconds) || 0;
     newConfig.backupRetentionCount = Number(newConfig.backupRetentionCount) || 0;
     newConfig.backupRetentionDays = Number(newConfig.backupRetentionDays) || 0;
 
@@ -97,10 +100,12 @@ class McServer {
 
     const oldPlayerListInterval = Number(this.config.playerListIntervalSeconds) || 0;
     const oldTpsInterval = Number(this.config.tpsIntervalSeconds) || 0;
+    const oldStatsInterval = Number(this.config.statsIntervalSeconds) || 0;
     this.config = newConfig;
     this.configureAutoTasks();
     const newPlayerListInterval = Number(this.config.playerListIntervalSeconds) || 0;
     const newTpsInterval = Number(this.config.tpsIntervalSeconds) || 0;
+    const newStatsInterval = Number(this.config.statsIntervalSeconds) || 0;
     if (this.process && !this.process.recovered) {
       if (oldPlayerListInterval !== newPlayerListInterval) {
         this.stopPlayerListPolling();
@@ -109,6 +114,10 @@ class McServer {
       if (oldTpsInterval !== newTpsInterval) {
         this.stopTpsPolling();
         this.startTpsPolling();
+      }
+      if (oldStatsInterval !== newStatsInterval) {
+        this.stopStatsPolling();
+        this.startStatsPolling();
       }
     }
     return this.config;
@@ -573,6 +582,8 @@ class McServer {
   }
 
   async getWindowsProcessStats(pid) {
+    if (this._statsPending) return null;
+    this._statsPending = true;
     try {
         // 输出进程名称和内存（名称应为 java）
         const out = await this.runChildProcess('powershell.exe', [
@@ -616,6 +627,8 @@ class McServer {
     } catch (e) {
         this.pushLog(`获取 Windows 进程统计异常: ${e.message}`);
         return null;
+    } finally {
+        this._statsPending = false;
     }
   }
 
@@ -692,6 +705,8 @@ class McServer {
   startStatsPolling() {
     this.stopStatsPolling();
     if (!this.process || !this.process.pid) return;
+    const intervalSeconds = Number(this.config.statsIntervalSeconds) || 0;
+    if (!intervalSeconds) return;
     const poll = async () => {
       if (!this.process || !this.process.pid) return;
       const stats = await this.getMcProcessStats(this.process.pid);
@@ -702,7 +717,7 @@ class McServer {
       }
     };
     poll(); // 立即执行一次
-    this.statsTimer = setInterval(poll, 1000);
+    this.statsTimer = setInterval(poll, intervalSeconds * 1000);
   }
 
   stopStatsPolling() {
@@ -1122,3 +1137,4 @@ class McServer {
 }
 
 module.exports = McServer;
+module.exports.McServer = McServer;

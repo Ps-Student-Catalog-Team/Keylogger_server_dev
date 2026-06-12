@@ -398,6 +398,12 @@
                     </div>
 
                     <div class="form-group">
+                        <label>性能统计间隔（秒）</label>
+                        <input type="number" id="mcStatsIntervalSeconds" min="0" value="5">
+                        <small style="color: var(--gray);">0 表示关闭性能统计轮询，默认 5 秒</small>
+                    </div>
+
+                    <div class="form-group">
                         <label class="switch-label">
                             <input type="checkbox" id="mcAutoBackupEnable">
                             <span class="switch-slider"></span>
