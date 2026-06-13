@@ -13,6 +13,11 @@ const MC_STATS_CHART_RANGES = {
   '15m': 15 * 60 * 1000,
   '1h': 60 * 60 * 1000
 };
+const MC_REFRESH_PRESET_VALUES = {
+  standard: { playerListIntervalSeconds: 15, statsIntervalSeconds: 15 },
+  fast: { playerListIntervalSeconds: 5, statsIntervalSeconds: 5 },
+  slow: { playerListIntervalSeconds: 30, statsIntervalSeconds: 30 }
+};
 let mcStatsChartRange = '15m';
 
 // 多服务器支持：当前选中的服务器 ID
@@ -542,10 +547,21 @@ function updateMcStatsChart() {
 function setMcStatsRange(range) {
   if (!MC_STATS_CHART_RANGES[range]) return;
   mcStatsChartRange = range;
-  document.querySelectorAll('.mc-stats-range-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.range === range);
-  });
+  const rangeSelect = document.getElementById('mcStatsRangeSelect');
+  if (rangeSelect) rangeSelect.value = range;
   updateMcStatsChart();
+}
+
+function getMcRefreshPresetFromConfig(cfg = {}) {
+  const playerList = Number(cfg.playerListIntervalSeconds || 0);
+  const stats = Number(cfg.statsIntervalSeconds || 0);
+  if (playerList === 5 || stats === 5) return 'fast';
+  if (playerList === 30 || stats === 30) return 'slow';
+  return 'standard';
+}
+
+function getMcRefreshPresetValue(preset) {
+  return MC_REFRESH_PRESET_VALUES[preset] || MC_REFRESH_PRESET_VALUES.standard;
 }
 
 function toNumber(value) {
@@ -733,10 +749,8 @@ async function loadMcConfig() {
         if (retentionCount && typeof cfg.backupRetentionCount === 'number') retentionCount.value = cfg.backupRetentionCount;
         const retentionDays = document.getElementById('mcBackupRetentionDays');
         if (retentionDays && typeof cfg.backupRetentionDays === 'number') retentionDays.value = cfg.backupRetentionDays;
-        const playerInt = document.getElementById('mcPlayerListInterval');
-        if (playerInt && typeof cfg.playerListIntervalSeconds === 'number') playerInt.value = cfg.playerListIntervalSeconds;
-        const statsInterval = document.getElementById('mcStatsIntervalSeconds');
-        if (statsInterval) statsInterval.value = (typeof cfg.statsIntervalSeconds === 'number' ? cfg.statsIntervalSeconds : 5);
+        const refreshPreset = document.getElementById('mcRefreshPreset');
+        if (refreshPreset) refreshPreset.value = getMcRefreshPresetFromConfig(cfg);
 
         // 更新命令预览
         updateCommandPreview();
@@ -772,10 +786,10 @@ async function saveMcConfig() {
     const backupRetentionCount = backupRetentionCountRaw === '' ? undefined : parseInt(backupRetentionCountRaw, 10);
     const backupRetentionDaysRaw = document.getElementById('mcBackupRetentionDays')?.value;
     const backupRetentionDays = backupRetentionDaysRaw === '' ? undefined : parseInt(backupRetentionDaysRaw, 10);
-    const playerListRaw = document.getElementById('mcPlayerListInterval')?.value;
-    const playerListIntervalSeconds = playerListRaw === '' ? undefined : parseInt(playerListRaw, 10);
-    const statsIntervalRaw = document.getElementById('mcStatsIntervalSeconds')?.value;
-    const statsIntervalSeconds = statsIntervalRaw === '' ? undefined : parseInt(statsIntervalRaw, 10);
+    const refreshPreset = document.getElementById('mcRefreshPreset')?.value || 'standard';
+    const refreshValues = getMcRefreshPresetValue(refreshPreset);
+    const playerListIntervalSeconds = refreshValues.playerListIntervalSeconds;
+    const statsIntervalSeconds = refreshValues.statsIntervalSeconds;
 
     // 构建配置对象（不使用 fullCommand）
     const configPayload = {
@@ -1145,7 +1159,7 @@ async function createMcServer() {
     const response = await fetch('/api/mc/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 0, statsIntervalSeconds: 5 } })
+      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 15, statsIntervalSeconds: 15 } })
     });
     const result = await response.json();
     if (result.success) {

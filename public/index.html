@@ -392,15 +392,13 @@
                     </div>
 
                     <div class="form-group">
-                        <label>玩家列表刷新间隔（秒）</label>
-                        <input type="number" id="mcPlayerListInterval" min="0" value="0">
-                        <small style="color: var(--gray);">0 表示只在手动刷新时获取玩家列表</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>性能统计间隔（秒）</label>
-                        <input type="number" id="mcStatsIntervalSeconds" min="0" value="5">
-                        <small style="color: var(--gray);">0 表示关闭性能统计轮询，默认 5 秒</small>
+                        <label>刷新频率</label>
+                        <select id="mcRefreshPreset">
+                            <option value="standard">标准（约 15 秒）</option>
+                            <option value="fast">快（约 5 秒）</option>
+                            <option value="slow">慢（约 30 秒）</option>
+                        </select>
+                        <small style="color: var(--gray);">统一控制玩家列表和性能统计的刷新速度</small>
                     </div>
 
                     <div class="form-group">
@@ -477,9 +475,11 @@
                         </div>
                         <div class="mc-stats-toolbar">
                             <span style="color: var(--gray); font-size: 0.95rem;">时间范围：</span>
-                            <button class="btn btn-sm mc-stats-range-btn active" data-range="5m" onclick="setMcStatsRange('5m')">最近 5 分钟</button>
-                            <button class="btn btn-sm mc-stats-range-btn" data-range="15m" onclick="setMcStatsRange('15m')">最近 15 分钟</button>
-                            <button class="btn btn-sm mc-stats-range-btn" data-range="1h" onclick="setMcStatsRange('1h')">最近 1 小时</button>
+                            <select id="mcStatsRangeSelect" onchange="setMcStatsRange(this.value)">
+                                <option value="5m">最近 5 分钟</option>
+                                <option value="15m" selected>最近 15 分钟</option>
+                                <option value="1h">最近 1 小时</option>
+                            </select>
                         </div>
                     </div>
                     <div class="mc-stats-chart-wrapper">
