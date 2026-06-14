@@ -33,9 +33,9 @@ class McServer {
       autoRestart: false,
       autoRestartDelaySeconds: 5,
       autoRestartMaxRetries: 3,
-      playerListIntervalSeconds: 0,
+      playerListIntervalSeconds: 1,
       tpsIntervalSeconds: 1,
-      statsIntervalSeconds: 5
+      statsIntervalSeconds: 1
     }, config || {});
 
     this.logs = [];

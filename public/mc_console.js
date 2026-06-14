@@ -14,9 +14,9 @@ const MC_STATS_CHART_RANGES = {
   '1h': 60 * 60 * 1000
 };
 const MC_REFRESH_PRESET_VALUES = {
-  standard: { playerListIntervalSeconds: 15, statsIntervalSeconds: 15 },
-  fast: { playerListIntervalSeconds: 5, statsIntervalSeconds: 5 },
-  slow: { playerListIntervalSeconds: 30, statsIntervalSeconds: 30 }
+  standard: { playerListIntervalSeconds: 1, statsIntervalSeconds: 1 },
+  fast: { playerListIntervalSeconds: 0.5, statsIntervalSeconds: 0.5 },
+  slow: { playerListIntervalSeconds: 5, statsIntervalSeconds: 5 }
 };
 let mcStatsChartRange = '15m';
 
@@ -555,8 +555,8 @@ function setMcStatsRange(range) {
 function getMcRefreshPresetFromConfig(cfg = {}) {
   const playerList = Number(cfg.playerListIntervalSeconds || 0);
   const stats = Number(cfg.statsIntervalSeconds || 0);
-  if (playerList === 5 || stats === 5) return 'fast';
-  if (playerList === 30 || stats === 30) return 'slow';
+  if (playerList === 0.5 || stats === 0.5) return 'fast';
+  if (playerList === 5 || stats === 5) return 'slow';
   return 'standard';
 }
 
@@ -1159,7 +1159,7 @@ async function createMcServer() {
     const response = await fetch('/api/mc/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 15, statsIntervalSeconds: 15 } })
+      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 1, statsIntervalSeconds: 1 } })
     });
     const result = await response.json();
     if (result.success) {
